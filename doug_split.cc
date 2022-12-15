@@ -46,7 +46,6 @@ bool nohex = false;
 
 int auto_name_counter, auto_name_offset, auto_name_digits, extmem_counter;
 std::map<RTLIL::IdString, int> auto_name_map;
-std::set<RTLIL::IdString> reg_wires;
 std::string auto_prefix, extmem_prefix;
 
 RTLIL::Module *active_module;
@@ -175,9 +174,6 @@ bool is_reg_wire(RTLIL::SigSpec sig, std::string &reg_name)
     return false;
 
   RTLIL::SigChunk chunk = sig.as_chunk();
-
-  if (reg_wires.count(chunk.wire->name) == 0)
-    return false;
 
   reg_name = id(chunk.wire->name);
   if (sig.size() != chunk.wire->width) {
@@ -441,6 +437,8 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell)
   FfData ff(nullptr, cell);
   std::string reg_name = cellname(cell);
 
+  f << stringf("\nFF cell '%s'.  Width %d\n", cell->name.c_str(), ff.width);
+
   // $ff / $_FF_ cell: not supported.
   if (ff.has_gclk) {
     log_error("FF cell `%s' has a gclk, not supported\n", reg_name.c_str());
@@ -472,26 +470,38 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell)
   }
 
 
+  std::string old_reg_name = reg_name;
   bool out_is_reg_wire = is_reg_wire(ff.sig_q, reg_name);
+  f << stringf("Old reg name '%s' translated to '%s'   is_reg_wire: %d\n",
+                old_reg_name.c_str(), reg_name.c_str(), out_is_reg_wire);
 
-  if (!out_is_reg_wire) {
-    if (ff.width == 1)
-      f << stringf("%s" "reg %s", indent.c_str(), reg_name.c_str());
-    else
-      f << stringf("%s" "reg [%d:0] %s", indent.c_str(), ff.width-1, reg_name.c_str());
-    dump_reg_init(f, ff.sig_q);
-    f << ";\n";
+  f << "D signal: ";
+  dump_sigspec(f, ff.sig_d);
+  f << "\n";
+
+  f << "Q signal: ";
+  dump_sigspec(f, ff.sig_q);
+  f << "\n";
+
+  f << "Clock signal: ";
+  dump_sigspec(f, ff.sig_clk);
+  f << "\n";
+
+  if (ff.has_srst) {
+    f << "SRST signal: ";
+    dump_sigspec(f, ff.sig_srst);
+    f << "\n";
   }
 
-  SigSpec sig_d = ff.sig_d;
+  if (ff.has_ce) {
+    f << "CE signal: ";
+    dump_sigspec(f, ff.sig_ce);
+    f << "\n";
+  }
 
 
-  f << stringf("%s" "always%s @(%sedge ", indent.c_str(), false ? "_ff" : "", ff.pol_clk ? "pos" : "neg");
-  dump_sigspec(f, ff.sig_clk);
-  f << stringf(")\n");
 
-  f << stringf("%s" "  ", indent.c_str());
-
+#if 0
   if (ff.has_srst && ff.has_ce && ff.ce_over_srst) {
     f << stringf("if (%s", ff.pol_ce ? "" : "!");
     dump_sigspec(f, ff.sig_ce);
@@ -527,7 +537,9 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell)
     dump_sigspec(f, ff.sig_q);
     f << stringf(" = %s;\n", reg_name.c_str());
   }
+#endif
 
+  return true;
 }
 
 
@@ -626,7 +638,6 @@ struct DougSplitCmd : public Pass {
 
 
     auto_name_map.clear();
-    reg_wires.clear();
 
 
     if (args.size() < 2) {
@@ -683,7 +694,6 @@ struct DougSplitCmd : public Pass {
     
 
     auto_name_map.clear();
-    reg_wires.clear();
   }
 } DougSplitCmd;
 

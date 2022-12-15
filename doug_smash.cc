@@ -36,12 +36,19 @@ USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 bool verbose, noattr;
-int cycle;
+
+// Doug
+
+// Map registers in original module to copies smashed dest module, for a particular cycle
+typedef dict<RTLIL::Cell*, RTLIL::Cell*> RegDict;
+
+// Map registers in original module to D or Q pin SigSpecs in smashed dest module, for a particular cycle.
+// The dict holds a copy of the SigSpec, which will still be valid after the register is the dest module is deleted.
+typedef dict<RTLIL::Cell*, RTLIL::SigSpec> SigSpecDict;
 
 
-int auto_name_counter, auto_name_offset, auto_name_digits, extmem_counter;
+int auto_name_counter, auto_name_offset, auto_name_digits;
 std::map<RTLIL::IdString, int> auto_name_map;
-std::set<RTLIL::IdString> reg_wires;
 std::string auto_prefix, extmem_prefix;
 
 RTLIL::Module *active_module;
@@ -99,10 +106,6 @@ void reset_auto_counter(RTLIL::Module *module)
       log("  renaming `%s' to `%s_%0*d_'.\n", it->first.c_str(), auto_prefix.c_str(), auto_name_digits, auto_name_offset + it->second);
 }
 
-std::string next_auto_id()
-{
-  return stringf("%s_%0*d_", auto_prefix.c_str(), auto_name_digits, auto_name_offset + auto_name_counter++);
-}
 
 std::string id(RTLIL::IdString internal_id, bool may_rename = true)
 {
@@ -171,9 +174,6 @@ bool is_reg_wire(RTLIL::SigSpec sig, std::string &reg_name)
 
   RTLIL::SigChunk chunk = sig.as_chunk();
 
-  if (reg_wires.count(chunk.wire->name) == 0)
-    return false;
-
   reg_name = id(chunk.wire->name);
   if (sig.size() != chunk.wire->width) {
     if (sig.size() == 1)
@@ -230,27 +230,180 @@ no_special_reg_name:
 
 
 
-bool rename_cells(RTLIL::Module *module, int cycle)
+void dump_const(std::ostream &f, const RTLIL::Const &data, int width = -1, int offset = 0, bool no_decimal = false, bool escape_comment = false)
 {
-  for (auto c : module->cells()) {
-    std::string newname = c->name.str() + "_#" + std::to_string(cycle);
-    module->rename(c, newname);
+  bool nostr = false;
+  bool decimal = false;
+  bool nohex = false;
+  bool nodec = false;
+
+  bool set_signed = (data.flags & RTLIL::CONST_FLAG_SIGNED) != 0;
+  if (width < 0)
+    width = data.bits.size() - offset;
+  if (width == 0) {
+    // See IEEE 1364-2005 Clause 5.1.14.
+    f << "{0{1'b0}}";
+    return;
   }
-  return true;
+  if (nostr)
+    goto dump_hex;
+  if ((data.flags & RTLIL::CONST_FLAG_STRING) == 0 || width != (int)data.bits.size()) {
+    if (width == 32 && !no_decimal && !nodec) {
+      int32_t val = 0;
+      for (int i = offset+width-1; i >= offset; i--) {
+        log_assert(i < (int)data.bits.size());
+        if (data.bits[i] != State::S0 && data.bits[i] != State::S1)
+          goto dump_hex;
+        if (data.bits[i] == State::S1)
+          val |= 1 << (i - offset);
+      }
+      if (decimal)
+        f << stringf("%d", val);
+      else if (set_signed && val < 0)
+        f << stringf("-32'sd%u", -val);
+      else
+        f << stringf("32'%sd%u", set_signed ? "s" : "", val);
+    } else {
+  dump_hex:
+      if (nohex)
+        goto dump_bin;
+      vector<char> bin_digits, hex_digits;
+      for (int i = offset; i < offset+width; i++) {
+        log_assert(i < (int)data.bits.size());
+        switch (data.bits[i]) {
+        case State::S0: bin_digits.push_back('0'); break;
+        case State::S1: bin_digits.push_back('1'); break;
+        case RTLIL::Sx: bin_digits.push_back('x'); break;
+        case RTLIL::Sz: bin_digits.push_back('z'); break;
+        case RTLIL::Sa: bin_digits.push_back('?'); break;
+        case RTLIL::Sm: log_error("Found marker state in final netlist.");
+        }
+      }
+      if (GetSize(bin_digits) == 0)
+        goto dump_bin;
+      while (GetSize(bin_digits) % 4 != 0)
+        if (bin_digits.back() == '1')
+          bin_digits.push_back('0');
+        else
+          bin_digits.push_back(bin_digits.back());
+      for (int i = 0; i < GetSize(bin_digits); i += 4)
+      {
+        char bit_3 = bin_digits[i+3];
+        char bit_2 = bin_digits[i+2];
+        char bit_1 = bin_digits[i+1];
+        char bit_0 = bin_digits[i+0];
+        if (bit_3 == 'x' || bit_2 == 'x' || bit_1 == 'x' || bit_0 == 'x') {
+          if (bit_3 != 'x' || bit_2 != 'x' || bit_1 != 'x' || bit_0 != 'x')
+            goto dump_bin;
+          hex_digits.push_back('x');
+          continue;
+        }
+        if (bit_3 == 'z' || bit_2 == 'z' || bit_1 == 'z' || bit_0 == 'z') {
+          if (bit_3 != 'z' || bit_2 != 'z' || bit_1 != 'z' || bit_0 != 'z')
+            goto dump_bin;
+          hex_digits.push_back('z');
+          continue;
+        }
+        if (bit_3 == '?' || bit_2 == '?' || bit_1 == '?' || bit_0 == '?') {
+          if (bit_3 != '?' || bit_2 != '?' || bit_1 != '?' || bit_0 != '?')
+            goto dump_bin;
+          hex_digits.push_back('?');
+          continue;
+        }
+        int val = 8*(bit_3 - '0') + 4*(bit_2 - '0') + 2*(bit_1 - '0') + (bit_0 - '0');
+        hex_digits.push_back(val < 10 ? '0' + val : 'a' + val - 10);
+      }
+      f << stringf("%d'%sh", width, set_signed ? "s" : "");
+      for (int i = GetSize(hex_digits)-1; i >= 0; i--)
+        f << hex_digits[i];
+    }
+    if (0) {
+  dump_bin:
+      f << stringf("%d'%sb", width, set_signed ? "s" : "");
+      if (width == 0)
+        f << stringf("0");
+      for (int i = offset+width-1; i >= offset; i--) {
+        log_assert(i < (int)data.bits.size());
+        switch (data.bits[i]) {
+        case State::S0: f << stringf("0"); break;
+        case State::S1: f << stringf("1"); break;
+        case RTLIL::Sx: f << stringf("x"); break;
+        case RTLIL::Sz: f << stringf("z"); break;
+        case RTLIL::Sa: f << stringf("?"); break;
+        case RTLIL::Sm: log_error("Found marker state in final netlist.");
+        }
+      }
+    }
+  } else {
+    if ((data.flags & RTLIL::CONST_FLAG_REAL) == 0)
+      f << stringf("\"");
+    std::string str = data.decode_string();
+    for (size_t i = 0; i < str.size(); i++) {
+      if (str[i] == '\n')
+        f << stringf("\\n");
+      else if (str[i] == '\t')
+        f << stringf("\\t");
+      else if (str[i] < 32)
+        f << stringf("\\%03o", str[i]);
+      else if (str[i] == '"')
+        f << stringf("\\\"");
+      else if (str[i] == '\\')
+        f << stringf("\\\\");
+      else if (str[i] == '/' && escape_comment && i > 0 && str[i-1] == '*')
+        f << stringf("\\/");
+      else
+        f << str[i];
+    }
+    if ((data.flags & RTLIL::CONST_FLAG_REAL) == 0)
+      f << stringf("\"");
+  }
 }
 
 
-bool rename_wires(RTLIL::Module *module, int cycle)
+void dump_sigchunk(std::ostream &f, const RTLIL::SigChunk &chunk, bool no_decimal = false)
 {
-  for (auto w : module->wires()) {
-    std::string newname = w->name.str() + "_#" + std::to_string(cycle);
-    module->rename(w, newname);
+  if (chunk.wire == NULL) {
+    dump_const(f, chunk.data, chunk.width, chunk.offset, no_decimal);
+  } else {
+    if (chunk.width == chunk.wire->width && chunk.offset == 0) {
+      f << stringf("%s", id(chunk.wire->name).c_str());
+    } else if (chunk.width == 1) {
+      if (chunk.wire->upto)
+        f << stringf("%s[%d]", id(chunk.wire->name).c_str(), (chunk.wire->width - chunk.offset - 1) + chunk.wire->start_offset);
+      else
+        f << stringf("%s[%d]", id(chunk.wire->name).c_str(), chunk.offset + chunk.wire->start_offset);
+    } else {
+      if (chunk.wire->upto)
+        f << stringf("%s[%d:%d]", id(chunk.wire->name).c_str(),
+            (chunk.wire->width - (chunk.offset + chunk.width - 1) - 1) + chunk.wire->start_offset,
+            (chunk.wire->width - chunk.offset - 1) + chunk.wire->start_offset);
+      else
+        f << stringf("%s[%d:%d]", id(chunk.wire->name).c_str(),
+            (chunk.offset + chunk.width - 1) + chunk.wire->start_offset,
+            chunk.offset + chunk.wire->start_offset);
+    }
   }
-  module->fixup_ports();
-
-  return true;
 }
 
+void dump_sigspec(std::ostream &f, const RTLIL::SigSpec &sig)
+{
+  if (GetSize(sig) == 0) {
+    // See IEEE 1364-2005 Clause 5.1.14.
+    f << "{0{1'b0}}";
+    return;
+  }
+  if (sig.is_chunk()) {
+    dump_sigchunk(f, sig.as_chunk());
+  } else {
+    f << stringf("{ ");
+    for (auto it = sig.chunks().rbegin(); it != sig.chunks().rend(); ++it) {
+      if (it != sig.chunks().rbegin())
+        f << stringf(", ");
+      dump_sigchunk(f, *it, true);
+    }
+    f << stringf(" }");
+  }
+}
 
 
 
@@ -265,7 +418,13 @@ IdString cycleize_name(IdString object_name, int cycle)
 template<class T>
 IdString map_name(RTLIL::Module *module, T *object, int cycle)
 {
-  return module->uniquify(cycleize_name(object->name, cycle));
+  IdString cycleized_name = cycleize_name(object->name, cycle);
+  IdString new_name =  module->uniquify(cycleized_name);
+  if (new_name != cycleized_name) {
+    log_warning("Collision with cycleized name %s - renamed to %s\n", 
+                cycleized_name.c_str(), new_name.c_str());
+  }
+  return new_name;
 }
 
 
@@ -295,7 +454,8 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 
 
 void smash_module(RTLIL::Design *design, RTLIL::Module *dest, 
-                  RTLIL::Module *src, SigMap &sigmap, int cycle)
+                  RTLIL::Module *src, SigMap &sigmap, int cycle,
+                  RegDict& registers)
 {
   // Copy the contents of the module src into module dest.  
 
@@ -337,6 +497,7 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
     design->select(dest, new_wire);
   }
 
+  // There should not be any processes present - they shoud have already been converted to FFs
   for (auto &src_proc_it : src->processes) {
     RTLIL::Process *new_proc = dest->addProcess(map_name(dest, src_proc_it.second, cycle), src_proc_it.second);
     map_attributes(new_proc, src_proc_it.second->name);
@@ -361,6 +522,19 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
     auto rewriter = [&](RTLIL::SigSpec &sig) { map_sigspec(wire_map, sig); };
     new_cell->rewrite_sigspecs(rewriter);
     design->select(dest, new_cell);
+
+
+    // For FF cells, update the dict that maps the (cycle-independent) register
+    // name to the new cell
+    if (RTLIL::builtin_ff_cell_types().count(src_cell->type) == 0) {
+
+      // Generate the official register name, usually from the Q signal name
+      std::string reg_name = cellname(src_cell);
+      FfData ff(nullptr, src_cell);
+      is_reg_wire(ff.sig_q, reg_name);
+
+      registers[src_cell] = new_cell;
+    }
   }
 
   for (auto &src_conn_it : src->connections()) {
@@ -373,6 +547,148 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
 }
 
 
+
+// Replace the given FF cell:
+// The wire driving the Q pin becomes an input port.
+// The wire driven by the Q pin becomes an output port.
+// An enable pin is converted into a mux that feeds the input port directly to the output port, and
+// a sync reset becomes an AND gate on the output port
+
+bool split_ff(std::ostream &f, RTLIL::Cell *cell,
+               RTLIL::SigSpec& d_sigspec, RTLIL::SigSpec& q_sigspec)
+{
+
+  std::string indent = "  ";
+
+  if (RTLIL::builtin_ff_cell_types().count(cell->type) == 0) {
+    return false;  // Not a ff
+  }
+
+  FfData ff(nullptr, cell);
+
+  // Return (copies of) these to the caller.
+  d_sigspec = ff.sig_d;
+  q_sigspec = ff.sig_q;
+
+
+  std::string reg_name = cellname(cell);
+
+  f << stringf("\nFF cell '%s'.  Width %d\n", cell->name.c_str(), ff.width);
+
+  // $ff / $_FF_ cell: not supported.
+  if (ff.has_gclk) {
+    log_error("FF cell `%s' has a gclk, not supported\n", reg_name.c_str());
+    return false;
+  }
+
+  // clockless FFs not supported
+  if (!ff.has_clk) {
+    log_error("FF cell `%s' has no clock, not supported\n", reg_name.c_str());
+    return false;
+  }
+
+  // S/R FFs not supported
+  if (ff.has_sr) {
+    log_error("S/R FF cell `%s' not supported\n", reg_name.c_str());
+    return false;
+  }
+
+  // Async reset not supported
+  if (ff.has_arst) {
+    log_error("FF cell `%s' has async reset, not supported\n", reg_name.c_str());
+    return false;
+  }
+
+  // Async load not supported
+  if (ff.has_aload) {
+    log_error("FF cell `%s' has async load, not supported\n", reg_name.c_str());
+    return false;
+  }
+
+
+  std::string old_reg_name = reg_name;
+  bool out_is_reg_wire = is_reg_wire(ff.sig_q, reg_name);
+  f << stringf("Old reg name '%s' translated to '%s'   is_reg_wire: %d\n",
+                old_reg_name.c_str(), reg_name.c_str(), out_is_reg_wire);
+
+  f << "D signal: ";
+  dump_sigspec(f, ff.sig_d);
+  f << "\n";
+
+  f << "Q signal: ";
+  dump_sigspec(f, ff.sig_q);
+  f << "\n";
+
+  f << "Clock signal: ";
+  dump_sigspec(f, ff.sig_clk);
+  f << "\n";
+
+  if (ff.has_srst) {
+    f << "SRST signal: ";
+    dump_sigspec(f, ff.sig_srst);
+    f << "\n";
+  }
+
+  if (ff.has_ce) {
+    f << "CE signal: ";
+    dump_sigspec(f, ff.sig_ce);
+    f << "\n";
+  }
+
+
+
+#if 0
+  if (ff.has_srst && ff.has_ce && ff.ce_over_srst) {
+    f << stringf("if (%s", ff.pol_ce ? "" : "!");
+    dump_sigspec(f, ff.sig_ce);
+    f << stringf(")\n");
+    f << stringf("%s" "    if (%s", indent.c_str(), ff.pol_srst ? "" : "!");
+    dump_sigspec(f, ff.sig_srst);
+    f << stringf(") %s <= ", reg_name.c_str());
+    dump_sigspec(f, ff.val_srst);
+    f << stringf(";\n");
+    f << stringf("%s" "    else ", indent.c_str());
+  } else {
+    if (ff.has_srst) {
+      f << stringf("if (%s", ff.pol_srst ? "" : "!");
+      dump_sigspec(f, ff.sig_srst);
+      f << stringf(") %s <= ", reg_name.c_str());
+      dump_sigspec(f, ff.val_srst);
+      f << stringf(";\n");
+      f << stringf("%s" "  else ", indent.c_str());
+    }
+    if (ff.has_ce) {
+      f << stringf("if (%s", ff.pol_ce ? "" : "!");
+      dump_sigspec(f, ff.sig_ce);
+      f << stringf(") ");
+    }
+  }
+
+  f << stringf("%s <= ", reg_name.c_str());
+  dump_sigspec(f, sig_d);
+  f << stringf(";\n");
+
+  if (!out_is_reg_wire) {
+    f << stringf("%s" "assign ", indent.c_str());
+    dump_sigspec(f, ff.sig_q);
+    f << stringf(" = %s;\n", reg_name.c_str());
+  }
+#endif
+
+  return true;
+}
+
+
+void join_sigs(RTLIL::SigSpec& from_sig, RTLIL::SigSpec& to_sig)
+{
+  log_assert(!from_sig.empty());
+  log_assert(!to_sig.empty());
+  log_assert(from_sig.size() == to_sig.size());
+
+}
+
+
+
 struct DougSmashCmd : public Pass {
 
   DougSmashCmd() : Pass("doug_smash", "Smash one module into another, with objhect renaming") { }
@@ -381,7 +697,7 @@ struct DougSmashCmd : public Pass {
   {
     //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
     log("\n");
-    log("    doug_smash <destmod> <srcmod> <cycle number> [options]\n");
+    log("    doug_smash <destmod> <srcmod> <cycle count> [options]\n");
     log("\n");
     log("Do whatever Doug is working on\n");
     log("\n");
@@ -392,15 +708,14 @@ struct DougSmashCmd : public Pass {
     log_header(design, "Executing Doug's stuff.\n");
 
 
+    int num_cycles = 1;
 
     verbose = false;
-    cycle = 1;
     noattr = false;
     auto_prefix = "";
 
 
     auto_name_map.clear();
-    reg_wires.clear();
 
 
     if (args.size() < 4) {
@@ -424,9 +739,9 @@ struct DougSmashCmd : public Pass {
       log_cmd_error("Same module specified for both source and destination!\n");
     }
 
-    cycle = atoi(args[3].c_str());
-    if (cycle < 0) {
-      log_cmd_error("Bad cycle value %d\n", cycle);
+    num_cycles = atoi(args[3].c_str());
+    if (num_cycles < 1) {
+      log_cmd_error("Bad num_cycles value %d\n", num_cycles);
     }
 
     size_t argidx;
@@ -464,15 +779,65 @@ struct DougSmashCmd : public Pass {
 
 
 
-    log("Smashing module `%s' into `%s' for cycle %d.\n", id2cstr(srcmodname), id2cstr(destmodname), cycle);
+    log("Smashing module `%s' into `%s' for num_cycles %d.\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
 
     SigMap sigmap(destmod);
 
-    smash_module(design, destmod, srcmod, sigmap, cycle);
+
+    SigSpecDict d_sigs0;
+    SigSpecDict q_sigs0;
+
+    SigSpecDict d_sigs1;
+    SigSpecDict q_sigs1;
+
+    // We unroll backwards in time.  The data flow is from cycle <num_cycles> to cycle 1.
+    for (int cycle = 1; cycle <= num_cycles; ++cycle) {
+
+      RegDict cur_cycle_regs;
+
+      smash_module(design, destmod, srcmod, sigmap, cycle, cur_cycle_regs);
+
+      SigSpecDict& prev_cycle_d_sigs = (cycle&0x01) ? d_sigs0 : d_sigs1;
+
+      SigSpecDict& cur_cycle_d_sigs = (cycle&0x01) ? d_sigs1 : d_sigs0;
+      SigSpecDict& cur_cycle_q_sigs = (cycle&0x01) ? q_sigs1 : q_sigs0;
+
+      cur_cycle_d_sigs.clear();
+      cur_cycle_q_sigs.clear();
+
+
+      for (auto pair : cur_cycle_regs) {
+        RTLIL::SigSpec d_sig;
+        RTLIL::SigSpec q_sig;
+
+        RTLIL::Cell *orig_reg = pair.first;
+        RTLIL::Cell *cycle_reg = pair.second;
+
+        split_ff(std::cout, cycle_reg, d_sig, q_sig);
+
+        cur_cycle_d_sigs[orig_reg] = d_sig;
+        cur_cycle_q_sigs[orig_reg] = q_sig;
+
+        RTLIL::SigSpec& prev_cycle_d_sig = prev_cycle_d_sigs[orig_reg];
+
+
+        if (cycle > 1) {
+          // Connect the current cycle's Q pin to the previous cycle's D pin
+          join_sigs(q_sig, prev_cycle_d_sig);
+        }
+
+        if (cycle == 1) {
+          // Make ports of the first cycle's Q pin
+        } else if (cycle == num_cycles) {
+          // Make ports of the last cycle's D pin
+        }
+      }
+
+    }
+
 
 
     auto_name_map.clear();
-    reg_wires.clear();
   }
 } DougSmashCmd;
 
