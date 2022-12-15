@@ -458,6 +458,7 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
                   RegDict& registers)
 {
   // Copy the contents of the module src into module dest.  
+  log("Smashing for cycle %d\n", cycle);
 
   dict<IdString, IdString> memory_map;
   for (auto &src_memory_it : src->memories) {
@@ -508,6 +509,7 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
     new_proc->rewrite_sigspecs(rewriter);
     design->select(dest, new_proc);
   }
+  log("Smashed wires and processes for cycle %d\n", cycle);
 
   for (auto src_cell : src->cells()) {
     RTLIL::Cell *new_cell = dest->addCell(map_name(dest, src_cell, cycle), src_cell);
@@ -526,7 +528,8 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
 
     // For FF cells, update the dict that maps the (cycle-independent) register
     // name to the new cell
-    if (RTLIL::builtin_ff_cell_types().count(src_cell->type) == 0) {
+    if (RTLIL::builtin_ff_cell_types().count(src_cell->type) > 0) {
+      log("Smashing ff cell %s for cycle %d\n", src_cell->name.c_str(), cycle);
 
       // Generate the official register name, usually from the Q signal name
       std::string reg_name = cellname(src_cell);
@@ -679,11 +682,16 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell,
 }
 
 
-void join_sigs(RTLIL::SigSpec& from_sig, RTLIL::SigSpec& to_sig)
+void join_sigs(RTLIL::Module *destmod, RTLIL::SigSpec& from_sig, RTLIL::SigSpec& to_sig)
 {
   log_assert(!from_sig.empty());
   log_assert(!to_sig.empty());
   log_assert(from_sig.size() == to_sig.size());
+
+  RTLIL::SigSig new_conn(from_sig, to_sig);
+  //map_sigspec(wire_map, new_conn.first);
+  //map_sigspec(wire_map, new_conn.second);
+  destmod->connect(new_conn);
 
 }
 
@@ -823,7 +831,7 @@ struct DougSmashCmd : public Pass {
 
         if (cycle > 1) {
           // Connect the current cycle's Q pin to the previous cycle's D pin
-          join_sigs(q_sig, prev_cycle_d_sig);
+          join_sigs(destmod, q_sig, prev_cycle_d_sig);
         }
 
         if (cycle == 1) {
