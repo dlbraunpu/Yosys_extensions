@@ -469,29 +469,11 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
   }
 
   dict<RTLIL::Wire*, RTLIL::Wire*> wire_map;
-  dict<IdString, IdString> positional_ports;
   for (auto src_wire : src->wires()) {
-    if (src_wire->port_id > 0)
-      positional_ports.emplace(stringf("$%d", src_wire->port_id), src_wire->name);
 
-    RTLIL::Wire *new_wire = nullptr;
-    if (src_wire->name[0] == '\\') {
-      RTLIL::Wire *hier_wire = dest->wire(cycleize_name(src_wire->name, cycle));
-      if (hier_wire != nullptr && hier_wire->get_bool_attribute(ID::hierconn)) {
-        hier_wire->attributes.erase(ID::hierconn);
-        if (GetSize(hier_wire) < GetSize(src_wire)) {
-          log_warning("Widening signal %s.%s to match size of %s.%s (cycle %d).\n",
-            log_id(dest), log_id(hier_wire), log_id(src), log_id(src_wire), cycle);
-          hier_wire->width = GetSize(src_wire);
-        }
-        new_wire = hier_wire;
-      }
-    }
-    if (new_wire == nullptr) {
-      new_wire = dest->addWire(map_name(dest, src_wire, cycle), src_wire);
-      new_wire->port_input = new_wire->port_output = false;
-      new_wire->port_id = false;
-    }
+    // new_wire inherits the port status of src_wire
+    RTLIL::Wire *new_wire = dest->addWire(map_name(dest, src_wire, cycle), src_wire);
+    new_wire->port_id = false;
 
     map_attributes(new_wire, src_wire->name);
     wire_map[src_wire] = new_wire;
@@ -540,6 +522,8 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
     }
   }
 
+  dest->fixup_ports();  // Give the new ports proper port IDs.  (Could be done once, after all cycles are smashed?)
+
   for (auto &src_conn_it : src->connections()) {
     RTLIL::SigSig new_conn = src_conn_it;
     map_sigspec(wire_map, new_conn.first);
@@ -550,6 +534,103 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
 }
 
 
+void wire_up_srst(std::ostream &f, RTLIL::Module* mod, FfData& ff,
+                  RTLIL::SigSpec& d_src, RTLIL::SigSpec& q_dest)
+{
+  f << "Wire up srst\n";
+  // To model the reset, add an inverter and an AND gate between D and Q
+  // Negative resets don't need the inverter.
+  RTLIL::Cell *and_gate = mod->addCell(mod->uniquify("$srst_and"), ID($and));
+  f << "Adding srst AND " << and_gate->name.str();
+  and_gate->setParam(ID::A_WIDTH, ff.width);
+  and_gate->setParam(ID::B_WIDTH, ff.width);
+  and_gate->setParam(ID::Y_WIDTH, ff.width);
+  and_gate->setParam(ID::A_SIGNED, 0);
+  and_gate->setParam(ID::B_SIGNED, 0);
+
+  // Connect the signal driving the D pin to the A input of the AND gate
+  and_gate->setPort(ID::A, ff.sig_d);
+
+  if (ff.pol_srst) {
+    // Positive reset needs an inverter
+    RTLIL::Cell *inv = mod->addCell(mod->uniquify("$srst_inv"), ID($not));
+    f << "Adding srst inverter " << inv->name.str();
+    inv->setParam(ID::A_WIDTH, 1);
+    inv->setParam(ID::Y_WIDTH, 1);
+    inv->setParam(ID::A_SIGNED, 0);
+
+    // Positive reset goes to inverter input
+    inv->setPort(ID::A, ff.sig_srst);
+
+    // Add a wire to connect the inverter and AND gate
+    RTLIL::Wire *w_inv = mod->addWire(mod->uniquify("$srst_inv"), 1);
+
+    // Wire connects inverter output to AND gate B input
+    inv->setPort(ID::Y, w_inv);
+
+    // If the AND gate is wider than 1 bit, we need to concatenate
+    // N copies of the control signal
+    RTLIL::SigBit sigbit(w_inv);
+    std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
+    RTLIL::SigSpec widened_w_inv(sigbits);
+
+    and_gate->setPort(ID::B, widened_w_inv);
+    
+  } else {
+    // Negative reset goes directly to B input (duplicated if width > 1)
+
+    RTLIL::SigBit sigbit(ff.sig_srst);
+    std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
+    RTLIL::SigSpec widened_srst(sigbits);
+
+    and_gate->setPort(ID::B, widened_srst);
+  }
+
+  // Lastly we need a stub wire from the AND gate output which
+  // will send the signal to the next cycle
+
+  RTLIL::Wire *w_d = mod->addWire(mod->uniquify("$gated_d"), ff.width);
+  and_gate->setPort(ID::Y, w_d);
+
+  // Return the modified D and Q connections to the caller.
+  d_src = w_d;
+  q_dest = ff.sig_q;
+}
+
+
+void wire_up_ce(std::ostream &f, RTLIL::Module* mod, FfData& ff,
+                  RTLIL::SigSpec& d_src, RTLIL::SigSpec& q_dest)
+{
+  f << "Wire up ce\n";
+  // To model the enable, add a mux between D and Q
+  // Keep in mind the ce signal polarity
+  RTLIL::Cell *mux = mod->addCell(mod->uniquify("$ce_mux"), ID($mux));
+  f << "Adding srst mux " << mux->name.str();
+  mux->setParam(ID::WIDTH, ff.width);
+
+  if (ff.pol_ce) {
+    // Positive enable
+    mux->setPort(ID::A, ff.sig_q);  // enable=0, previous stage signal is passed through
+    mux->setPort(ID::B, ff.sig_d);  // enable=1, FF gets normal input
+  } else {
+    // Negative enable, opposite situation
+    mux->setPort(ID::A, ff.sig_d);  
+    mux->setPort(ID::B, ff.sig_q); 
+  }
+
+  mux->setPort(ID::S, ff.sig_ce);   // Mux select
+
+  // Lastly we need a stub wire from the mux output which
+  // will send the signal to the next cycle
+
+  RTLIL::Wire *w_d = mod->addWire(mod->uniquify("$muxed_d"), ff.width);
+  mux->setPort(ID::Y, w_d);
+
+  // Return the modified D and Q connections to the caller.
+  d_src = w_d;
+  q_dest = ff.sig_q;
+}
+
 
 // Replace the given FF cell:
 // The wire driving the Q pin becomes an input port.
@@ -558,10 +639,10 @@ void smash_module(RTLIL::Design *design, RTLIL::Module *dest,
 // a sync reset becomes an AND gate on the output port
 
 bool split_ff(std::ostream &f, RTLIL::Cell *cell,
-               RTLIL::SigSpec& d_sigspec, RTLIL::SigSpec& q_sigspec)
+               RTLIL::SigSpec& d_src, RTLIL::SigSpec& q_dest)
 {
+  RTLIL::Module *mod = cell->module;
 
-  std::string indent = "  ";
 
   if (RTLIL::builtin_ff_cell_types().count(cell->type) == 0) {
     return false;  // Not a ff
@@ -569,14 +650,10 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell,
 
   FfData ff(nullptr, cell);
 
-  // Return (copies of) these to the caller.
-  d_sigspec = ff.sig_d;
-  q_sigspec = ff.sig_q;
-
 
   std::string reg_name = cellname(cell);
 
-  f << stringf("\nFF cell '%s'.  Width %d\n", cell->name.c_str(), ff.width);
+  f << stringf("\nSplitting FF cell '%s'.  Width %d\n", cell->name.c_str(), ff.width);
 
   // $ff / $_FF_ cell: not supported.
   if (ff.has_gclk) {
@@ -640,8 +717,10 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell,
 
 
 
+  if (ff.has_srst && ff.has_ce) {
+    if (ff.ce_over_srst) {
+    f << "TODO: ce_over_srst\n";
 #if 0
-  if (ff.has_srst && ff.has_ce && ff.ce_over_srst) {
     f << stringf("if (%s", ff.pol_ce ? "" : "!");
     dump_sigspec(f, ff.sig_ce);
     f << stringf(")\n");
@@ -651,33 +730,33 @@ bool split_ff(std::ostream &f, RTLIL::Cell *cell,
     dump_sigspec(f, ff.val_srst);
     f << stringf(";\n");
     f << stringf("%s" "    else ", indent.c_str());
-  } else {
-    if (ff.has_srst) {
-      f << stringf("if (%s", ff.pol_srst ? "" : "!");
-      dump_sigspec(f, ff.sig_srst);
-      f << stringf(") %s <= ", reg_name.c_str());
-      dump_sigspec(f, ff.val_srst);
-      f << stringf(";\n");
-      f << stringf("%s" "  else ", indent.c_str());
-    }
-    if (ff.has_ce) {
-      f << stringf("if (%s", ff.pol_ce ? "" : "!");
-      dump_sigspec(f, ff.sig_ce);
-      f << stringf(") ");
-    }
-  }
-
-  f << stringf("%s <= ", reg_name.c_str());
-  dump_sigspec(f, sig_d);
-  f << stringf(";\n");
-
-  if (!out_is_reg_wire) {
-    f << stringf("%s" "assign ", indent.c_str());
-    dump_sigspec(f, ff.sig_q);
-    f << stringf(" = %s;\n", reg_name.c_str());
-  }
 #endif
+    } else {
+      f << "TODO: not ce_over_srst\n";
+    }
+    // TMP
+    f << "TODO: Process srst+ce properly\n";
+    wire_up_ce(f, mod, ff, d_src, q_dest);
+    //d_src = ff.sig_d;
+    //q_dest = ff.sig_q;
+  } else if (ff.has_srst) {
+    wire_up_srst(f, mod, ff, d_src, q_dest);
+  } else if (ff.has_ce) {
+    f << "Process ce\n";
+    wire_up_ce(f, mod, ff, d_src, q_dest);
+    d_src = ff.sig_d;
+    q_dest = ff.sig_q;
+  } else {
+    // A plain D -> Q connection; no added gates
+    // Return (copies of) these to the caller.
+    f << "Process simple ff\n";
+    d_src = ff.sig_d;
+    q_dest = ff.sig_q;
+  }
 
+
+  // The FF of course goes away.
+  mod->remove(cell);
   return true;
 }
 
@@ -688,10 +767,7 @@ void join_sigs(RTLIL::Module *destmod, RTLIL::SigSpec& from_sig, RTLIL::SigSpec&
   log_assert(!to_sig.empty());
   log_assert(from_sig.size() == to_sig.size());
 
-  RTLIL::SigSig new_conn(from_sig, to_sig);
-  //map_sigspec(wire_map, new_conn.first);
-  //map_sigspec(wire_map, new_conn.second);
-  destmod->connect(new_conn);
+  destmod->connect(from_sig, to_sig);
 
 }
 
@@ -792,11 +868,11 @@ struct DougSmashCmd : public Pass {
     SigMap sigmap(destmod);
 
 
-    SigSpecDict d_sigs0;
-    SigSpecDict q_sigs0;
+    SigSpecDict d_srcs0;
+    SigSpecDict q_dests0;
 
-    SigSpecDict d_sigs1;
-    SigSpecDict q_sigs1;
+    SigSpecDict d_srcs1;
+    SigSpecDict q_dests1;
 
     // We unroll backwards in time.  The data flow is from cycle <num_cycles> to cycle 1.
     for (int cycle = 1; cycle <= num_cycles; ++cycle) {
@@ -805,33 +881,33 @@ struct DougSmashCmd : public Pass {
 
       smash_module(design, destmod, srcmod, sigmap, cycle, cur_cycle_regs);
 
-      SigSpecDict& prev_cycle_d_sigs = (cycle&0x01) ? d_sigs0 : d_sigs1;
+      SigSpecDict& prev_cycle_d_srcs = (cycle&0x01) ? d_srcs0 : d_srcs1;
 
-      SigSpecDict& cur_cycle_d_sigs = (cycle&0x01) ? d_sigs1 : d_sigs0;
-      SigSpecDict& cur_cycle_q_sigs = (cycle&0x01) ? q_sigs1 : q_sigs0;
+      SigSpecDict& cur_cycle_d_srcs = (cycle&0x01) ? d_srcs1 : d_srcs0;
+      SigSpecDict& cur_cycle_q_dests = (cycle&0x01) ? q_dests1 : q_dests0;
 
-      cur_cycle_d_sigs.clear();
-      cur_cycle_q_sigs.clear();
+      cur_cycle_d_srcs.clear();
+      cur_cycle_q_dests.clear();
 
 
       for (auto pair : cur_cycle_regs) {
-        RTLIL::SigSpec d_sig;
-        RTLIL::SigSpec q_sig;
+        RTLIL::SigSpec d_src;
+        RTLIL::SigSpec q_dest;
 
         RTLIL::Cell *orig_reg = pair.first;
         RTLIL::Cell *cycle_reg = pair.second;
 
-        split_ff(std::cout, cycle_reg, d_sig, q_sig);
+        split_ff(std::cout, cycle_reg, d_src, q_dest);
 
-        cur_cycle_d_sigs[orig_reg] = d_sig;
-        cur_cycle_q_sigs[orig_reg] = q_sig;
+        cur_cycle_d_srcs[orig_reg] = d_src;
+        cur_cycle_q_dests[orig_reg] = q_dest;
 
-        RTLIL::SigSpec& prev_cycle_d_sig = prev_cycle_d_sigs[orig_reg];
+        RTLIL::SigSpec& prev_cycle_d_src = prev_cycle_d_srcs[orig_reg];
 
 
         if (cycle > 1) {
           // Connect the current cycle's Q pin to the previous cycle's D pin
-          join_sigs(destmod, q_sig, prev_cycle_d_sig);
+          join_sigs(destmod, q_dest, prev_cycle_d_src);
         }
 
         if (cycle == 1) {
