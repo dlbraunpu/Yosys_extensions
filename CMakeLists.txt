@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.9)
 
 project (doug_smash VERSION 1.0 DESCRIPTION "yosys extension for function extraction")
 
-
-set(CMAKE_CXX_STANDARD 11)
+# LLVM 13 requires this
+set(CMAKE_CXX_STANDARD 17)
 
 # Stuff required for Yosys
 set(YOSYS_DIR /home/dlbraun/.local/share/yosys)
