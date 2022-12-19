@@ -21,6 +21,8 @@
  *
  */
 
+#include "write_llvm.h"
+
 #include "kernel/register.h"
 #include "kernel/celltypes.h"
 #include "kernel/log.h"
@@ -31,6 +33,7 @@
 #include <sstream>
 #include <set>
 #include <map>
+
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -914,9 +917,10 @@ struct DougSmashCmd : public Pass {
 
     }
 
-
-
     auto_name_map.clear();
+
+    log_header(design, "Writing LLVM data...\n");
+    write_llvm_ir(destmod, "xxx"/*module name*/, "FAC1"/*dest ASV name*/, "xxx.llvm" /*output file name*/);
   }
 } DougSmashCmd;
 

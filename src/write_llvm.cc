@@ -52,13 +52,21 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   std::shared_ptr<llvm::IRBuilder<>> Builder = std::make_unique<llvm::IRBuilder<>>(*TheContext);
 
 
+  // Get the yosys RTLIL object representing the destination ASV.
+  std::string wireName = "\\"+destName + "_#1";
+  RTLIL::Wire *destWire = unrolledRtlMod->wire(wireName);
+  if (!destWire) {
+    assert(false);
+  }
+
 
   std::vector<llvm::Type *> argTy;
-  // for now, one 32-bit arg
+  // for now, two 32-bit args
+  argTy.push_back(llvm::IntegerType::get(*TheContext, 32));
   argTy.push_back(llvm::IntegerType::get(*TheContext, 32));
 
-  // for now, a 32-bit return type
-  llvm::Type* retTy = llvm::IntegerType::get(*TheContext, 32);
+  // for now, a return type of the desired width
+  llvm::Type* retTy = llvm::IntegerType::get(*TheContext, destWire->width);
 
 
   // This function type definition is suitable for TheFunction 
@@ -81,12 +89,6 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   // basic block
   llvm::BasicBlock *BB = llvm::BasicBlock::Create(*TheContext, "bb_;_"+destName, TheFunction);
   Builder->SetInsertPoint(BB);
-
-  std::string wireName = destName + "_#1";
-  RTLIL::Wire *destWire = unrolledRtlMod->wire(wireName);
-  if (!destWire) {
-    assert(false);
-  }
 
   // All the real work happens here 
   llvm::Value *destValue = generateValue(destWire, TheContext, Builder);
