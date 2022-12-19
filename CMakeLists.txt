@@ -51,7 +51,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -Wall -g")
 # The shared library that will contain the Yosys extension we are making
 add_library(${PROJECT_NAME} SHARED
     ./doug_smash.cc
-    ./dummy.cc
+    ./write_llvm.cc
 )
 
 target_link_libraries(${PROJECT_NAME} ${Z3_LIBRARIES})
