@@ -16,8 +16,13 @@
 
 // Yosys headers
 #include "kernel/yosys.h"
-//#include "kernel/rtlil.h"
 
+
+void buildSignalMaps(Yosys::RTLIL::Module *module);
+
+Yosys::RTLIL::Wire *getDrivingWire(const Yosys::RTLIL::SigBit& sigbit);
+
+Yosys::RTLIL::Cell *getDrivingCell(const Yosys::RTLIL::SigBit& sigbit);
 
 llvm::Value *generateValue(Yosys::RTLIL::Wire *wire,
                            std::shared_ptr<llvm::LLVMContext> c,

@@ -20,7 +20,7 @@
 
 // Yosys headers
 #include "kernel/yosys.h"
-//#include "kernel/rtlil.h"
+#include "kernel/sigtools.h"
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
@@ -29,10 +29,104 @@ USING_YOSYS_NAMESPACE  // Does "using namespace"
 #define llvmInt(val, width, c) llvm::ConstantInt::get(llvmWidth(width, c), val, false);
 
 
+// Maps:
+// 1:  A SigSpec to its canonical SigSpec
+// 2: A SigBit to its canonical SigBit
+// 3: A Wire to its canonical SigSpec
+SigMap sigmap;
+
+dict<RTLIL::SigBit, RTLIL::Cell*> canonical_sigbit_to_driving_cell_table;
+dict<RTLIL::SigBit, RTLIL::Wire*> canonical_sigbit_to_driving_wire_table;
+
+
+void buildSignalMaps(RTLIL::Module *module)
+{
+  sigmap.clear();
+  sigmap.set(module);
+  canonical_sigbit_to_driving_cell_table.clear();
+
+  for (auto cell : module->cells()) {
+    for (auto &conn : cell->connections()) {
+      // conn.first is the signal IdString, conn.second is its SigSpec
+      if (cell->output(conn.first)) {
+        for (auto bit : sigmap(conn.second)) {
+          // sigmap(conn.second) is the canonical SigSpec.
+          // bit is a canonical SigBit
+          assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);
+          canonical_sigbit_to_driving_cell_table[bit] = cell;
+        }
+      }
+    }
+  }
+
+  for (auto wire : module->wires()) {
+    if (wire->port_input) {
+      for (auto bit : sigmap(wire)) {
+        // sigmap(wire) is the canonical SigSpec.
+        // bit is a canonical SigBit
+        assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);  // Multi-driven?
+        canonical_sigbit_to_driving_wire_table[bit] = wire;
+      }
+    }
+  }
+
+}
+
+
+
+RTLIL::Wire *getDrivingWire(const RTLIL::SigBit& sigbit)
+{
+  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
+
+  auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
+  if (iter != canonical_sigbit_to_driving_wire_table.end()) {
+    return iter->second;
+  }
+  return nullptr;  // Not driven by a wire
+}
+
+
+
+RTLIL::Cell *getDrivingCell(const RTLIL::SigBit& sigbit)
+{
+  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
+
+  auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
+  if (iter != canonical_sigbit_to_driving_cell_table.end()) {
+    return iter->second;
+  }
+  return nullptr;  // Not driven by a cell
+}
+
+
+
+
+
+
 llvm::Value *generateValue(RTLIL::Wire *wire,
                            std::shared_ptr<llvm::LLVMContext> c,
                            std::shared_ptr<llvm::IRBuilder<>> b)
 {
+
+  log_debug("RTLIL Wire %s:\n", wire->name.c_str());
+  log_wire(wire, "");
+
+  // Print what drives the bits of this wire
+  for (auto bit : sigmap(wire)) {
+    RTLIL::Wire *wire = getDrivingWire(bit);
+    if (wire) {
+      log_wire(wire, "    ");
+    } else {
+      RTLIL::Cell *cell = getDrivingCell(bit);
+      if (cell) {
+        log_cell(cell, "    ");
+      } else {
+        log("No connection!\n");
+      }
+    }
+  }
+
+
   // TMP: Just return an arbitrary constant
   return llvm::ConstantInt::get(llvmWidth(wire->width, c), 123, false);
   
@@ -41,7 +135,16 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
 
 
 
-void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::string destName, std::string llvmFileName) {
+void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::string destName, std::string llvmFileName)
+{
+
+
+  log_debug("Building signal maps\n");
+  buildSignalMaps(unrolledRtlMod);
+  log_debug("Built signal maps\n");
+  log_debug("%ld cells, %ld wires\n",
+             canonical_sigbit_to_driving_cell_table.size(),
+             canonical_sigbit_to_driving_wire_table.size());
 
 
   std::shared_ptr<llvm::LLVMContext> TheContext = std::make_unique<llvm::LLVMContext>();
@@ -109,3 +212,4 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   output.close();
 
 }
+

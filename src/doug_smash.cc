@@ -696,17 +696,21 @@ bool split_ff(RTLIL::Cell *cell,
 
   std::ostringstream s;
 
-  s.clear();
+  //s.clear();
   dump_sigspec(s, ff.sig_d);
   log_debug("D signal: %s\n", s.str().c_str());
+
+  log_debug("AKA:      %s\n", log_signal(ff.sig_d));
 
   s.clear();
   dump_sigspec(s, ff.sig_q);
   log_debug("Q signal: %s\n", s.str().c_str());
+  log_debug("AKA:      %s\n", log_signal(ff.sig_q));
 
   s.clear();
   dump_sigspec(s, ff.sig_clk);
   log_debug("Clock signal: %s\n", s.str().c_str());
+  log_debug("AKA:      %s\n", log_signal(ff.sig_clk));
 
   if (ff.has_srst) {
     s.clear();
