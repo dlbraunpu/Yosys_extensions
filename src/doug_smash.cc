@@ -751,7 +751,8 @@ struct DougSmashCmd : public Pass {
     auto_name_map.clear();
 
     log_header(design, "Writing LLVM data...\n");
-    write_llvm_ir(destmod, "xxx"/*module name*/, "FAC1"/*dest ASV name*/, "xxx.llvm" /*output file name*/);
+    std::string asvName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
+    write_llvm_ir(destmod, "xxx"/*module name*/, asvName, "xxx.llvm" /*output file name*/);
   }
 } DougSmashCmd;
 

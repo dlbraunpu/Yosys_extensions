@@ -121,10 +121,10 @@ RTLIL::Wire *getDrivingWire(const RTLIL::SigBit& sigbit)
 {
   RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
 
-  log("getDrivingWire:  ");
-  my_log_sigbit(sigbit);
-  log("canonical:  ");
-  my_log_sigbit(canonicalSigbit);
+  //log("getDrivingWire:  ");
+  //my_log_sigbit(sigbit);
+  //log("canonical:  ");
+  //my_log_sigbit(canonicalSigbit);
 
   auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_wire_table.end()) {
@@ -139,10 +139,10 @@ RTLIL::Cell *getDrivingCell(const RTLIL::SigBit& sigbit)
 {
   RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
 
-  log("getDrivingCell:  ");
-  my_log_sigbit(sigbit);
-  log("canonical:  ");
-  my_log_sigbit(canonicalSigbit);
+  //log("getDrivingCell:  ");
+  //my_log_sigbit(sigbit);
+  //log("canonical:  ");
+  //my_log_sigbit(canonicalSigbit);
 
   auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_cell_table.end()) {
@@ -165,23 +165,28 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
   my_log_wire(wire);
 
   // Print what drives the bits of this wire
-  RTLIL::SigSpec sig = sigmap(wire);
-  for (auto& bit : sig.to_sigbit_vector()) {
+  RTLIL::SigSpec sigspec = sigmap(wire);
+
+  log_debug("Drivers of each bit:\n");
+
+  int bitnum = 0;
+  for (auto& bit : sigspec.to_sigbit_vector()) {
     if (!bit.is_wire()) {
-      log("Constant value %d\n", bit.data);
+      log("%d constant value %d\n", bitnum, bit.data);
     } else {
       RTLIL::Wire *wire = getDrivingWire(bit);
       if (wire) {
-        my_log_wire(wire);
+        log("%d wire %s\n", bitnum,  wire->name.c_str());
       } else {
         RTLIL::Cell *cell = getDrivingCell(bit);
         if (cell) {
-          log_cell(cell);
+          log("%d cell %s\n", bitnum, cell->name.c_str());
         } else {
-          log("No connection!\n");
+          log("%d no connection!\n", bitnum);
         }
       }
     }
+    bitnum++;
   }
 
 
@@ -214,9 +219,11 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
 
 
   // Get the yosys RTLIL object representing the destination ASV.
-  std::string wireName = "\\"+destName + "_#1";
+  // TODO: Map the original Verilog register name to the actual wire name.
+  std::string wireName = destName + "_#1";
   RTLIL::Wire *destWire = unrolledRtlMod->wire(wireName);
   if (!destWire) {
+    log_error("Can't find wire for destination ASV %s\n", destName.c_str());
     assert(false);
   }
 
