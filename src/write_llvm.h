@@ -15,14 +15,29 @@
 #include "kernel/yosys.h"
 
 
+// Struct to specify a particular bit of a particular port of a particular cell.
+// BTW, all the built-in cells have only one output, named "\Y"
+struct CellPortBit {
+  Yosys::RTLIL::Cell *cell;
+  Yosys::RTLIL::IdString port;
+  int bit;
+};
+
+// Struct to specify a particular bit of a particular wire
+struct WireBit {
+  Yosys::RTLIL::Wire *wire;
+  int bit;
+};
+
+
 void my_log_sigspec(const Yosys::RTLIL::SigSpec& sig);
 void my_log_sigbit(const Yosys::RTLIL::SigBit& bit);
 
 void buildSignalMaps(Yosys::RTLIL::Module *module);
 
-Yosys::RTLIL::Wire *getDrivingWire(const Yosys::RTLIL::SigBit& sigbit);
+WireBit *getDrivingWire(const Yosys::RTLIL::SigBit& sigbit);
 
-Yosys::RTLIL::Cell *getDrivingCell(const Yosys::RTLIL::SigBit& sigbit);
+CellPortBit *getDrivingCell(const Yosys::RTLIL::SigBit& sigbit);
 
 llvm::Value *generateValue(Yosys::RTLIL::Wire *wire,
                            std::shared_ptr<llvm::LLVMContext> c,
