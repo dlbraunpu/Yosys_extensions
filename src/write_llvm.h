@@ -7,16 +7,16 @@
 #include "llvm/IR/Value.h"
 
 // Without this, yosys.h gets confused by the above LLVM headers.  Strange!!!
-// It seems to be caused by the word "ID" being used in clever ways by both packages.
+// It seems to be caused by the identifier "ID" being used in clever ways by both packages.
 #include "llvm/IR/PassManager.h"
-
-
-
 
 
 // Yosys headers
 #include "kernel/yosys.h"
 
+
+void my_log_sigspec(const Yosys::RTLIL::SigSpec& sig);
+void my_log_sigbit(const Yosys::RTLIL::SigBit& bit);
 
 void buildSignalMaps(Yosys::RTLIL::Module *module);
 

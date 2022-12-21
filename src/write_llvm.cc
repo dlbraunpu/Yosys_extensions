@@ -21,12 +21,42 @@
 // Yosys headers
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
+#include "backends/rtlil/rtlil_backend.h"
+
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 // Copied from check_regs.cpp 
 #define llvmWidth(a, c) llvm::IntegerType::get(*c, a)
 #define llvmInt(val, width, c) llvm::ConstantInt::get(llvmWidth(width, c), val, false);
+
+
+void my_log_sigspec(const RTLIL::SigSpec& sig)
+{
+  std::stringstream buf;
+  RTLIL_BACKEND::dump_sigspec(buf, sig, false);
+  log("sigspec: %s\n", buf.str().c_str());
+}
+
+
+
+void my_log_sigbit(const RTLIL::SigBit& bit)
+{
+  if (bit.is_wire()) {
+    log("sigbit type wire %s offset %d\n", bit.wire->name.c_str(), bit.offset);
+  } else {
+    log("sigbit type constant %d\n", bit.data);
+  }
+}
+
+
+void my_log_wire(const RTLIL::Wire *wire)
+{
+  log("wire %s  width %d  start_offset %d  port_id %d  input %d  output %d\n", wire->name.c_str(),
+      wire->width, wire->start_offset, wire->port_id, wire->port_input, wire->port_output);
+
+}
+
 
 
 // Maps:
@@ -46,12 +76,20 @@ void buildSignalMaps(RTLIL::Module *module)
   canonical_sigbit_to_driving_cell_table.clear();
 
   for (auto cell : module->cells()) {
-    for (auto &conn : cell->connections()) {
+    for (auto& conn : cell->connections()) {
       // conn.first is the signal IdString, conn.second is its SigSpec
       if (cell->output(conn.first)) {
-        for (auto bit : sigmap(conn.second)) {
+        RTLIL::SigSpec sig = sigmap(conn.second);
+        //log("\nCell %s port %s -> ", cell->name.c_str(),  conn.first.c_str());
+        //my_log_sigspec(conn.second);
+        //log("\ncanonical: ");
+        //my_log_sigspec(sig);
+        for (auto& bit : sig.to_sigbit_vector()) {
           // sigmap(conn.second) is the canonical SigSpec.
           // bit is a canonical SigBit
+          //log("  ");
+          //my_log_sigbit(bit);
+          assert(bit.is_wire());  // A cell can't drive a constant!
           assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);
           canonical_sigbit_to_driving_cell_table[bit] = cell;
         }
@@ -61,7 +99,12 @@ void buildSignalMaps(RTLIL::Module *module)
 
   for (auto wire : module->wires()) {
     if (wire->port_input) {
-      for (auto bit : sigmap(wire)) {
+      RTLIL::SigSpec sig = sigmap(wire);
+      //log("\nport_input wire :\n");
+      //my_log_wire(wire);
+      //log("\ncanonical sigspec:\n");
+      //my_log_sigspec(sig);
+      for (auto& bit : sig.to_sigbit_vector()) {
         // sigmap(wire) is the canonical SigSpec.
         // bit is a canonical SigBit
         assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);  // Multi-driven?
@@ -78,6 +121,11 @@ RTLIL::Wire *getDrivingWire(const RTLIL::SigBit& sigbit)
 {
   RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
 
+  log("getDrivingWire:  ");
+  my_log_sigbit(sigbit);
+  log("canonical:  ");
+  my_log_sigbit(canonicalSigbit);
+
   auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_wire_table.end()) {
     return iter->second;
@@ -90,6 +138,11 @@ RTLIL::Wire *getDrivingWire(const RTLIL::SigBit& sigbit)
 RTLIL::Cell *getDrivingCell(const RTLIL::SigBit& sigbit)
 {
   RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
+
+  log("getDrivingCell:  ");
+  my_log_sigbit(sigbit);
+  log("canonical:  ");
+  my_log_sigbit(canonicalSigbit);
 
   auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_cell_table.end()) {
@@ -109,19 +162,24 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
 {
 
   log_debug("RTLIL Wire %s:\n", wire->name.c_str());
-  log_wire(wire, "");
+  my_log_wire(wire);
 
   // Print what drives the bits of this wire
-  for (auto bit : sigmap(wire)) {
-    RTLIL::Wire *wire = getDrivingWire(bit);
-    if (wire) {
-      log_wire(wire, "    ");
+  RTLIL::SigSpec sig = sigmap(wire);
+  for (auto& bit : sig.to_sigbit_vector()) {
+    if (!bit.is_wire()) {
+      log("Constant value %d\n", bit.data);
     } else {
-      RTLIL::Cell *cell = getDrivingCell(bit);
-      if (cell) {
-        log_cell(cell, "    ");
+      RTLIL::Wire *wire = getDrivingWire(bit);
+      if (wire) {
+        my_log_wire(wire);
       } else {
-        log("No connection!\n");
+        RTLIL::Cell *cell = getDrivingCell(bit);
+        if (cell) {
+          log_cell(cell);
+        } else {
+          log("No connection!\n");
+        }
       }
     }
   }
