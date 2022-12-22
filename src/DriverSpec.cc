@@ -3,6 +3,16 @@
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
+
+
+// If neither thing has an object, this return false
+bool DriverChunk::has_same_object(const DriverBit& bit) const
+{
+        return is_object() &&
+               (bit.wire == wire && bit.cell == cell && bit.port == port);
+}
+
+
 DriverChunk::DriverChunk()
 {
 	wire = NULL;
@@ -429,18 +439,17 @@ void DriverSpec::pack() const
 	int last_end_offset = 0;
 
 	for (auto &bit : old_bits) {
-                // Doug TODO
-		if (last && bit.wire == last->wire) {
-			if (bit.wire == NULL) {
-				last->data.push_back(bit.data);
-				last->width++;
-				continue;
-			} else if (last_end_offset == bit.offset) {
-				last_end_offset++;
-				last->width++;
-				continue;
-			}
-		}
+		if (last) {
+                        if (bit.is_data() && last->is_data()) {
+                                last->data.push_back(bit.data);
+                                last->width++;
+                                continue;
+                        } else if (last->has_same_object(bit) && last_end_offset == bit.offset) {
+                                last_end_offset++;
+                                last->width++;
+                                continue;
+                        }
+                }
 		that->chunks_.push_back(bit);
 		last = &that->chunks_.back();
 		last_end_offset = bit.offset + 1;
@@ -716,6 +725,15 @@ void DriverSpec::remove2(const std::set<DriverBit> &pattern, DriverSpec *other)
 	check();
 }
 
+
+static bool extractable(const DriverBit& bit, const DriverChunk& chunk)
+{
+        return chunk.has_same_object(bit) &&
+                bit.offset >= chunk.offset &&
+                bit.offset < chunk.offset + chunk.width;
+}
+
+
 DriverSpec DriverSpec::extract(const DriverSpec &pattern, const DriverSpec *other) const
 {
 	if (other)
@@ -732,18 +750,12 @@ DriverSpec DriverSpec::extract(const DriverSpec &pattern, const DriverSpec *othe
 		if (other) {
 			std::vector<DriverBit> bits_other = other->to_driverbit_vector();
 			for (int i = 0; i < width_; i++)
-                                // Doug TODO
-				if (bits_match[i].wire &&
-					bits_match[i].wire == pattern_chunk.wire &&
-					bits_match[i].offset >= pattern_chunk.offset &&
-					bits_match[i].offset < pattern_chunk.offset + pattern_chunk.width)
+                                // Doug: Simplified!
+                                if (extractable(bits_match[i], pattern_chunk))
 					ret.append(bits_other[i]);
 		} else {
 			for (int i = 0; i < width_; i++)
-				if (bits_match[i].wire &&
-					bits_match[i].wire == pattern_chunk.wire &&
-					bits_match[i].offset >= pattern_chunk.offset &&
-					bits_match[i].offset < pattern_chunk.offset + pattern_chunk.width)
+                                if (extractable(bits_match[i], pattern_chunk))
 					ret.append(bits_match[i]);
 		}
 	}
