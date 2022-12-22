@@ -36,6 +36,8 @@ struct DriverChunk
 	inline int size() const { return width; }
 	inline bool is_wire() const { return wire != NULL; }
 	inline bool is_cell() const { return cell != NULL; }
+	inline bool is_object() const { return cell != NULL || wire != NULL; }
+	inline bool is_data() const { return !is_object(); }
 
 	bool operator <(const DriverChunk &other) const;
 	bool operator ==(const DriverChunk &other) const;
@@ -69,6 +71,8 @@ struct DriverBit
 
 	inline bool is_wire() const { return wire != NULL; }
 	inline bool is_cell() const { return cell != NULL; }
+	inline bool is_object() const { return cell != NULL || wire != NULL; }
+	inline bool is_data() const { return !is_object(); }
 
 	bool operator <(const DriverBit &other) const;
 	bool operator ==(const DriverBit &other) const;
@@ -251,7 +255,8 @@ public:
 	std::string as_string() const;
 	RTLIL::Const as_const() const;
 	RTLIL::Wire *as_wire() const;
-        // TODO: asCell() that returns both cell and port
+        // as_cell() returns both cell and port
+	RTLIL::Cell *as_cell(RTLIL::IdString port) const;
 	DriverChunk as_chunk() const;
 	DriverBit as_bit() const;
 
@@ -262,10 +267,6 @@ public:
 	std::vector<DriverBit> to_driverbit_vector() const;
 	std::map<DriverBit, DriverBit> to_driverbit_map(const DriverSpec &other) const;
 	dict<DriverBit, DriverBit> to_driverbit_dict(const DriverSpec &other) const;
-
-	static bool parse(DriverSpec &sig, RTLIL::Module *module, std::string str);
-	static bool parse_sel(DriverSpec &sig, RTLIL::Design *design, RTLIL::Module *module, std::string str);
-	static bool parse_rhs(const DriverSpec &lhs, DriverSpec &sig, RTLIL::Module *module, std::string str);
 
 	operator std::vector<DriverChunk>() const { return chunks(); }
 	operator std::vector<DriverBit>() const { return bits(); }
