@@ -10,33 +10,35 @@
 // There are also helper structs DriverChunk and DriverBit.
 
 
+struct DriverBit;
+struct DriverSpec;
 
 struct DriverChunk
 {
-	RTLIL::Wire *wire; // Only one of wire and cell will be non-null
-	RTLIL::Cell *cell;
-        RTLIL::IdString port;  // Only valid if cell is set.
-	std::vector<RTLIL::State> data; // only used if wire and cell == NULL, LSB at index 0
+	Yosys::RTLIL::Wire *wire; // Only one of wire and cell will be non-null
+	Yosys::RTLIL::Cell *cell;
+        Yosys::RTLIL::IdString port;  // Only valid if cell is set.
+	std::vector<Yosys::RTLIL::State> data; // only used if wire and cell == nullptr, LSB at index 0
 	int width, offset;
 
 	DriverChunk();
-	DriverChunk(const RTLIL::Const &value);
-	DriverChunk(RTLIL::Wire *wire);
-	DriverChunk(RTLIL::Wire *wire, int offset, int width = 1);
-	DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port);
-	DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset, int width = 1);
+	DriverChunk(const Yosys::RTLIL::Const &value);
+	DriverChunk(Yosys::RTLIL::Wire *wire);
+	DriverChunk(Yosys::RTLIL::Wire *wire, int offset, int width = 1);
+	DriverChunk(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port);
+	DriverChunk(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port, int offset, int width = 1);
 	DriverChunk(const std::string &str);
 	DriverChunk(int val, int width = 32);
-	DriverChunk(RTLIL::State bit, int width = 1);
+	DriverChunk(Yosys::RTLIL::State bit, int width = 1);
 	DriverChunk(const DriverBit &bit);
 	DriverChunk(const DriverChunk &driverchunk);
 	DriverChunk &operator =(const DriverChunk &other) = default;
 
 	DriverChunk extract(int offset, int length) const;
 	inline int size() const { return width; }
-	inline bool is_wire() const { return wire != NULL; }
-	inline bool is_cell() const { return cell != NULL; }
-	inline bool is_object() const { return cell != NULL || wire != NULL; }
+	inline bool is_wire() const { return wire != nullptr; }
+	inline bool is_cell() const { return cell != nullptr; }
+	inline bool is_object() const { return cell != nullptr || wire != nullptr; }
 	inline bool is_data() const { return !is_object(); }
 
         int object_width() const;  // Width of wire or port (possibly different than our width)
@@ -50,30 +52,30 @@ struct DriverChunk
 
 struct DriverBit
 {
-	RTLIL::Wire *wire; // Only one of wire and cell will be non-null
-	RTLIL::Cell *cell;
-        RTLIL::IdString port;  // Only valid if cell is set.
+	Yosys::RTLIL::Wire *wire; // Only one of wire and cell will be non-null
+	Yosys::RTLIL::Cell *cell;
+        Yosys::RTLIL::IdString port;  // Only valid if cell is set.
 	union {
-		RTLIL::State data; // used if wire and cell == NULL
-		int offset;        // used if wire or cell != NULL
+		Yosys::RTLIL::State data; // used if wire and cell == nullptr
+		int offset;        // used if wire or cell != nullptr
 	};
 
 	DriverBit();
-	DriverBit(RTLIL::State bit);
+	DriverBit(Yosys::RTLIL::State bit);
 	explicit DriverBit(bool bit);
-	DriverBit(RTLIL::Wire *wire);
-	DriverBit(RTLIL::Wire *wire, int offset);
-	DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port);
-	DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset);
+	DriverBit(Yosys::RTLIL::Wire *wire);
+	DriverBit(Yosys::RTLIL::Wire *wire, int offset);
+	DriverBit(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port);
+	DriverBit(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port, int offset);
 	DriverBit(const DriverChunk &chunk);
 	DriverBit(const DriverChunk &chunk, int index);
 	DriverBit(const DriverSpec &sig);
 	DriverBit(const DriverBit &driverbit) = default;
 	DriverBit &operator =(const DriverBit &other) = default;
 
-	inline bool is_wire() const { return wire != NULL; }
-	inline bool is_cell() const { return cell != NULL; }
-	inline bool is_object() const { return cell != NULL || wire != NULL; }
+	inline bool is_wire() const { return wire != nullptr; }
+	inline bool is_cell() const { return cell != nullptr; }
+	inline bool is_object() const { return cell != nullptr || wire != nullptr; }
 	inline bool is_data() const { return !is_object(); }
 
 	bool operator <(const DriverBit &other) const;
@@ -128,7 +130,7 @@ private:
 
 	// Only used by Module::remove(const pool<Wire*> &wires)
 	// but cannot be more specific as it isn't yet declared
-	friend struct RTLIL::Module;
+	friend struct Yosys::RTLIL::Module;
 
 public:
 	DriverSpec();
@@ -136,19 +138,19 @@ public:
 	DriverSpec(std::initializer_list<DriverSpec> parts);
 	DriverSpec &operator=(const DriverSpec &other);
 
-	DriverSpec(const RTLIL::Const &value);
+	DriverSpec(const Yosys::RTLIL::Const &value);
 	DriverSpec(const DriverChunk &chunk);
-	DriverSpec(RTLIL::Wire *wire);
-	DriverSpec(RTLIL::Wire *wire, int offset, int width = 1);
-	DriverSpec(RTLIL::Cell *cell, const RTLIL::IdString& port);
-	DriverSpec(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset, int width = 1);
+	DriverSpec(Yosys::RTLIL::Wire *wire);
+	DriverSpec(Yosys::RTLIL::Wire *wire, int offset, int width = 1);
+	DriverSpec(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port);
+	DriverSpec(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port, int offset, int width = 1);
 	DriverSpec(const std::string &str);
 	DriverSpec(int val, int width = 32);
-	DriverSpec(RTLIL::State bit, int width = 1);
+	DriverSpec(Yosys::RTLIL::State bit, int width = 1);
 	DriverSpec(const DriverBit &bit, int width = 1);
 	DriverSpec(const std::vector<DriverChunk> &chunks);
 	DriverSpec(const std::vector<DriverBit> &bits);
-	DriverSpec(const pool<DriverBit> &bits);
+	DriverSpec(const Yosys::pool<DriverBit> &bits);
 	DriverSpec(const std::set<DriverBit> &bits);
 	explicit DriverSpec(bool bit);
 
@@ -193,8 +195,8 @@ public:
 	void replace(const DriverSpec &pattern, const DriverSpec &with);
 	void replace(const DriverSpec &pattern, const DriverSpec &with, DriverSpec *other) const;
 
-	void replace(const dict<DriverBit, DriverBit> &rules);
-	void replace(const dict<DriverBit, DriverBit> &rules, DriverSpec *other) const;
+	void replace(const Yosys::dict<DriverBit, DriverBit> &rules);
+	void replace(const Yosys::dict<DriverBit, DriverBit> &rules, DriverSpec *other) const;
 
 	void replace(const std::map<DriverBit, DriverBit> &rules);
 	void replace(const std::map<DriverBit, DriverBit> &rules, DriverSpec *other) const;
@@ -205,27 +207,27 @@ public:
 	void remove(const DriverSpec &pattern, DriverSpec *other) const;
 	void remove2(const DriverSpec &pattern, DriverSpec *other);
 
-	void remove(const pool<DriverBit> &pattern);
-	void remove(const pool<DriverBit> &pattern, DriverSpec *other) const;
-	void remove2(const pool<DriverBit> &pattern, DriverSpec *other);
+	void remove(const Yosys::pool<DriverBit> &pattern);
+	void remove(const Yosys::pool<DriverBit> &pattern, DriverSpec *other) const;
+	void remove2(const Yosys::pool<DriverBit> &pattern, DriverSpec *other);
 	void remove2(const std::set<DriverBit> &pattern, DriverSpec *other);
 
 	void remove(int offset, int length = 1);
 	void remove_const();
 
-	DriverSpec extract(const DriverSpec &pattern, const DriverSpec *other = NULL) const;
-	DriverSpec extract(const pool<DriverBit> &pattern, const DriverSpec *other = NULL) const;
+	DriverSpec extract(const DriverSpec &pattern, const DriverSpec *other = nullptr) const;
+	DriverSpec extract(const Yosys::pool<DriverBit> &pattern, const DriverSpec *other = nullptr) const;
 	DriverSpec extract(int offset, int length = 1) const;
 	DriverSpec extract_end(int offset) const { return extract(offset, width_ - offset); }
 
 	void append(const DriverSpec &signal);
-	inline void append(Wire *wire) { append(DriverSpec(wire)); }
-	inline void append(Cell *cell, const RTLIL::IdString& port) { append(DriverSpec(cell, port)); }
+	inline void append(Yosys::RTLIL::Wire *wire) { append(DriverSpec(wire)); }
+	inline void append(Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port) { append(DriverSpec(cell, port)); }
 	inline void append(const DriverChunk &chunk) { append(DriverSpec(chunk)); }
-	inline void append(const RTLIL::Const &const_) { append(DriverSpec(const_)); }
+	inline void append(const Yosys::RTLIL::Const &const_) { append(DriverSpec(const_)); }
 
 	void append(const DriverBit &bit);
-	inline void append(RTLIL::State state) { append(DriverBit(state)); }
+	inline void append(Yosys::RTLIL::State state) { append(DriverBit(state)); }
 	inline void append(bool bool_) { append(DriverBit(bool_)); }
 
 	void extend_u0(int width, bool is_signed = false);
@@ -255,20 +257,20 @@ public:
 	bool as_bool() const;
 	int as_int(bool is_signed = false) const;
 	std::string as_string() const;
-	RTLIL::Const as_const() const;
-	RTLIL::Wire *as_wire() const;
+	Yosys::RTLIL::Const as_const() const;
+	Yosys::RTLIL::Wire *as_wire() const;
         // as_cell() returns both cell and port
-	RTLIL::Cell *as_cell(RTLIL::IdString port) const;
+	Yosys::RTLIL::Cell *as_cell(Yosys::RTLIL::IdString& port) const;
 	DriverChunk as_chunk() const;
 	DriverBit as_bit() const;
 
 	bool match(const char* pattern) const;
 
 	std::set<DriverBit> to_driverbit_set() const;
-	pool<DriverBit> to_driverbit_pool() const;
+        Yosys::pool<DriverBit> to_driverbit_pool() const;
 	std::vector<DriverBit> to_driverbit_vector() const;
 	std::map<DriverBit, DriverBit> to_driverbit_map(const DriverSpec &other) const;
-	dict<DriverBit, DriverBit> to_driverbit_dict(const DriverSpec &other) const;
+        Yosys::dict<DriverBit, DriverBit> to_driverbit_dict(const DriverSpec &other) const;
 
 	operator std::vector<DriverChunk>() const { return chunks(); }
 	operator std::vector<DriverBit>() const { return bits(); }
@@ -277,18 +279,18 @@ public:
 	unsigned int hash() const { if (!hash_) updhash(); return hash_; };
 
 #ifndef NDEBUG
-	void check(Module *mod = nullptr) const;
+	void check(Yosys::RTLIL::Module *mod = nullptr) const;
 #else
-	void check(Module *mod = nullptr) const { (void)mod; }
+	void check(Yosys::RTLIL::Module *mod = nullptr) const { (void)mod; }
 #endif
 };
 
 
-inline DriverBit::DriverBit() : wire(NULL), cell(NULL), data(RTLIL::State::S0) { }
-inline DriverBit::DriverBit(RTLIL::State bit) : wire(NULL), cell(NULL), data(bit) { }
-inline DriverBit::DriverBit(bool bit) : wire(NULL), cell(NULL), data(bit ? State::S1 : State::S0) { }
-inline DriverBit::DriverBit(RTLIL::Wire *wire) : wire(wire), cell(NULL), offset(0) { log_assert(wire && wire->width == 1); }
-inline DriverBit::DriverBit(RTLIL::Wire *wire, int offset) : wire(wire), cell(NULL), offset(offset) { log_assert(wire != nullptr); }
+inline DriverBit::DriverBit() : wire(nullptr), cell(nullptr), data(Yosys::RTLIL::State::S0) { }
+inline DriverBit::DriverBit(Yosys::RTLIL::State bit) : wire(nullptr), cell(nullptr), data(bit) { }
+inline DriverBit::DriverBit(bool bit) : wire(nullptr), cell(nullptr), data(bit ? Yosys::RTLIL::State::S1 : Yosys::RTLIL::State::S0) { }
+inline DriverBit::DriverBit(Yosys::RTLIL::Wire *wire) : wire(wire), cell(nullptr), offset(0) { log_assert(wire && wire->width == 1); }
+inline DriverBit::DriverBit(Yosys::RTLIL::Wire *wire, int offset) : wire(wire), cell(nullptr), offset(offset) { log_assert(wire != nullptr); }
 inline DriverBit::DriverBit(const DriverChunk &chunk) : wire(chunk.wire) { log_assert(chunk.width == 1); if (wire) offset = chunk.offset; else data = chunk.data[0]; }
 inline DriverBit::DriverBit(const DriverChunk &chunk, int index) : wire(chunk.wire) { if (wire) offset = chunk.offset + index; else data = chunk.data[index]; }
 
@@ -310,9 +312,9 @@ inline bool DriverBit::operator!=(const DriverBit &other) const {
 
 inline unsigned int DriverBit::hash() const {
 	if (wire)
-		return mkhash_add(wire->name.hash(), offset);
+		return Yosys::hashlib::mkhash_add(wire->name.hash(), offset);
         else if (cell)
-		return mkhash_add(cell->name.hash(), mkhash_add(port.hash(), offset));
+		return Yosys::hashlib::mkhash_add(cell->name.hash(), Yosys::hashlib::mkhash_add(port.hash(), offset));
 	return data;
 }
 

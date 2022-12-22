@@ -1,6 +1,7 @@
 #include "DriverSpec.h"
-#include "kernel/yosys.h"
+#include "kernel/rtlil.h"
 
+USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 DriverChunk::DriverChunk()
 {
@@ -143,7 +144,7 @@ bool DriverChunk::operator <(const DriverChunk &other) const
 	if (cell != other.cell)
 		return cell < other.cell;
 
-        if (port != other.port) (
+        if (port != other.port) 
                 return port < other.port;  
 
 	if (offset != other.offset)
@@ -174,7 +175,7 @@ int DriverChunk::object_width() const
 {
   log_assert(is_object());
   if (is_wire()) {
-    return wire->width
+    return wire->width;
   } else {
     return cell->getPort(port).size();
   }
@@ -725,11 +726,11 @@ DriverSpec DriverSpec::extract(const DriverSpec &pattern, const DriverSpec *othe
 	log_assert(other == NULL || width_ == other->width_);
 
 	DriverSpec ret;
-	std::vector<DriverBit> bits_match = to_sigbit_vector();
+	std::vector<DriverBit> bits_match = to_driverbit_vector();
 
 	for (auto& pattern_chunk : pattern.chunks()) {
 		if (other) {
-			std::vector<DriverBit> bits_other = other->to_sigbit_vector();
+			std::vector<DriverBit> bits_other = other->to_driverbit_vector();
 			for (int i = 0; i < width_; i++)
                                 // Doug TODO
 				if (bits_match[i].wire &&
@@ -760,11 +761,11 @@ DriverSpec DriverSpec::extract(const pool<DriverBit> &pattern, const DriverSpec 
 
 	log_assert(other == NULL || width_ == other->width_);
 
-	std::vector<DriverBit> bits_match = to_sigbit_vector();
+	std::vector<DriverBit> bits_match = to_driverbit_vector();
 	DriverSpec ret;
 
 	if (other) {
-		std::vector<DriverBit> bits_other = other->to_sigbit_vector();
+		std::vector<DriverBit> bits_other = other->to_driverbit_vector();
 		for (int i = 0; i < width_; i++)
 			if (bits_match[i].is_object() && pattern.count(bits_match[i]))
 				ret.append(bits_other[i]);
@@ -1009,7 +1010,7 @@ void DriverSpec::check(Module *mod) const
 					log_assert(chunks_[i-1].is_object());
 				log_assert(chunk.offset == 0);
 				log_assert(chunk.data.size() == (size_t)chunk.width);
-			} else {
+			}
 			w += chunk.width;
 		}
 		log_assert(w == width_);
@@ -1020,14 +1021,16 @@ void DriverSpec::check(Module *mod) const
 		cover("driverspec.check.unpacked");
 
 		if (mod != nullptr) {
-			for (size_t i = 0; i < bits_.size(); i++)
-				if (bits_[i].wire != nullptr)
+			for (size_t i = 0; i < bits_.size(); i++) {
+				if (bits_[i].wire != nullptr) {
 					log_assert(bits_[i].wire->module == mod);
+                                }
 				if (bits_[i].cell != nullptr) {
 					log_assert(!bits_[i].port.empty());
                                         log_assert(bits_[i].cell->hasPort(bits_[i].port));
 					log_assert(bits_[i].cell->module == mod);
                                 }
+                        }
 		}
 
 		log_assert(width_ == GetSize(bits_));
@@ -1307,7 +1310,7 @@ RTLIL::Cell *DriverSpec::as_cell(RTLIL::IdString& port) const
 
 	pack();
 	log_assert(is_cell());
-        port = this->port;
+        port = chunks_[0].port;
 	return chunks_[0].cell;
 }
 
@@ -1361,9 +1364,9 @@ bool DriverSpec::match(const char* pattern) const
 	return true;
 }
 
-std::set<DriverBit> DriverSpec::to_sigbit_set() const
+std::set<DriverBit> DriverSpec::to_driverbit_set() const
 {
-	cover("driverspec.to_sigbit_set");
+	cover("driverspec.to_driverbit_set");
 
 	pack();
 	std::set<DriverBit> sigbits;
@@ -1373,9 +1376,9 @@ std::set<DriverBit> DriverSpec::to_sigbit_set() const
 	return sigbits;
 }
 
-pool<DriverBit> DriverSpec::to_sigbit_pool() const
+pool<DriverBit> DriverSpec::to_driverbit_pool() const
 {
-	cover("driverspec.to_sigbit_pool");
+	cover("driverspec.to_driverbit_pool");
 
 	pack();
 	pool<DriverBit> sigbits;
@@ -1386,17 +1389,17 @@ pool<DriverBit> DriverSpec::to_sigbit_pool() const
 	return sigbits;
 }
 
-std::vector<DriverBit> DriverSpec::to_sigbit_vector() const
+std::vector<DriverBit> DriverSpec::to_driverbit_vector() const
 {
-	cover("driverspec.to_sigbit_vector");
+	cover("driverspec.to_driverbit_vector");
 
 	unpack();
 	return bits_;
 }
 
-std::map<DriverBit, DriverBit> DriverSpec::to_sigbit_map(const DriverSpec &other) const
+std::map<DriverBit, DriverBit> DriverSpec::to_driverbit_map(const DriverSpec &other) const
 {
-	cover("driverspec.to_sigbit_map");
+	cover("driverspec.to_driverbit_map");
 
 	unpack();
 	other.unpack();
@@ -1410,9 +1413,9 @@ std::map<DriverBit, DriverBit> DriverSpec::to_sigbit_map(const DriverSpec &other
 	return new_map;
 }
 
-dict<DriverBit, DriverBit> DriverSpec::to_sigbit_dict(const DriverSpec &other) const
+dict<DriverBit, DriverBit> DriverSpec::to_driverbit_dict(const DriverSpec &other) const
 {
-	cover("driverspec.to_sigbit_dict");
+	cover("driverspec.to_driverbit_dict");
 
 	unpack();
 	other.unpack();
@@ -1427,19 +1430,5 @@ dict<DriverBit, DriverBit> DriverSpec::to_sigbit_dict(const DriverSpec &other) c
 	return new_map;
 }
 
-static void sigspec_parse_split(std::vector<std::string> &tokens, const std::string &text, char sep)
-{
-	size_t start = 0, end = 0;
-	while ((end = text.find(sep, start)) != std::string::npos) {
-		tokens.push_back(text.substr(start, end - start));
-		start = end + 1;
-	}
-	tokens.push_back(text.substr(start));
-}
-
-static int sigspec_parse_get_dummy_line_num()
-{
-	return 0;
-}
 
 
