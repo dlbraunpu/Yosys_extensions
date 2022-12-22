@@ -1,64 +1,73 @@
+#include "DriverSpec.h"
 #include "kernel/yosys.h"
 
 
-RTLIL::SigChunk::SigChunk()
+DriverChunk::DriverChunk()
 {
 	wire = NULL;
+        cell = NULL;
 	width = 0;
 	offset = 0;
 }
 
-RTLIL::SigChunk::SigChunk(const RTLIL::Const &value)
+DriverChunk::DriverChunk(const RTLIL::Const &value)
 {
 	wire = NULL;
+        cell = NULL;
 	data = value.bits;
 	width = GetSize(data);
 	offset = 0;
 }
 
-RTLIL::SigChunk::SigChunk(RTLIL::Wire *wire)
+DriverChunk::DriverChunk(RTLIL::Wire *wire)
 {
 	log_assert(wire != nullptr);
-	this->wire = wire;
-	this->width = wire->width;
-	this->offset = 0;
+	wire = wire;
+        cell = NULL;
+	width = wire->width;
+	offset = 0;
 }
 
-RTLIL::SigChunk::SigChunk(RTLIL::Wire *wire, int offset, int width)
+DriverChunk::DriverChunk(RTLIL::Wire *wire, int offset, int width)
 {
 	log_assert(wire != nullptr);
-	this->wire = wire;
-	this->width = width;
-	this->offset = offset;
+	wire = wire;
+        cell = NULL;
+	width = width;
+	offset = offset;
 }
 
-RTLIL::SigChunk::SigChunk(const std::string &str)
+DriverChunk::DriverChunk(const std::string &str)
 {
 	wire = NULL;
+        cell = NULL;
 	data = RTLIL::Const(str).bits;
 	width = GetSize(data);
 	offset = 0;
 }
 
-RTLIL::SigChunk::SigChunk(int val, int width)
+DriverChunk::DriverChunk(int val, int width)
 {
 	wire = NULL;
+        cell = NULL;
 	data = RTLIL::Const(val, width).bits;
 	this->width = GetSize(data);
 	offset = 0;
 }
 
-RTLIL::SigChunk::SigChunk(RTLIL::State bit, int width)
+DriverChunk::DriverChunk(RTLIL::State bit, int width)
 {
 	wire = NULL;
+        cell = NULL;
 	data = RTLIL::Const(bit, width).bits;
 	this->width = GetSize(data);
 	offset = 0;
 }
 
-RTLIL::SigChunk::SigChunk(const RTLIL::SigBit &bit)
+DriverChunk::DriverChunk(const DriverBit &bit)
 {
 	wire = bit.wire;
+        cell = NULL;
 	offset = 0;
 	if (wire == NULL)
 		data = RTLIL::Const(bit.data).bits;
@@ -67,14 +76,14 @@ RTLIL::SigChunk::SigChunk(const RTLIL::SigBit &bit)
 	width = 1;
 }
 
-RTLIL::SigChunk::SigChunk(const RTLIL::SigChunk &sigchunk)
+DriverChunk::DriverChunk(const DriverChunk &sigchunk)
 {
 	*this = sigchunk;
 }
 
-RTLIL::SigChunk RTLIL::SigChunk::extract(int offset, int length) const
+DriverChunk DriverChunk::extract(int offset, int length) const
 {
-	RTLIL::SigChunk ret;
+	DriverChunk ret;
 	if (wire) {
 		ret.wire = wire;
 		ret.offset = this->offset + offset;
@@ -87,7 +96,7 @@ RTLIL::SigChunk RTLIL::SigChunk::extract(int offset, int length) const
 	return ret;
 }
 
-bool RTLIL::SigChunk::operator <(const RTLIL::SigChunk &other) const
+bool DriverChunk::operator <(const DriverChunk &other) const
 {
 	if (wire && other.wire)
 		if (wire->name != other.wire->name)
@@ -105,30 +114,30 @@ bool RTLIL::SigChunk::operator <(const RTLIL::SigChunk &other) const
 	return data < other.data;
 }
 
-bool RTLIL::SigChunk::operator ==(const RTLIL::SigChunk &other) const
+bool DriverChunk::operator ==(const DriverChunk &other) const
 {
 	return wire == other.wire && width == other.width && offset == other.offset && data == other.data;
 }
 
-bool RTLIL::SigChunk::operator !=(const RTLIL::SigChunk &other) const
+bool DriverChunk::operator !=(const DriverChunk &other) const
 {
 	if (*this == other)
 		return false;
 	return true;
 }
 
-RTLIL::SigSpec::SigSpec()
+DriverSpec::DriverSpec()
 {
 	width_ = 0;
 	hash_ = 0;
 }
 
-RTLIL::SigSpec::SigSpec(const RTLIL::SigSpec &other)
+DriverSpec::DriverSpec(const DriverSpec &other)
 {
 	*this = other;
 }
 
-RTLIL::SigSpec::SigSpec(std::initializer_list<RTLIL::SigSpec> parts)
+DriverSpec::DriverSpec(std::initializer_list<DriverSpec> parts)
 {
 	cover("kernel.rtlil.sigspec.init.list");
 
@@ -142,7 +151,7 @@ RTLIL::SigSpec::SigSpec(std::initializer_list<RTLIL::SigSpec> parts)
 		append(*it--);
 }
 
-RTLIL::SigSpec &RTLIL::SigSpec::operator=(const RTLIL::SigSpec &other)
+DriverSpec &DriverSpec::operator=(const DriverSpec &other)
 {
 	cover("kernel.rtlil.sigspec.assign");
 
@@ -153,7 +162,7 @@ RTLIL::SigSpec &RTLIL::SigSpec::operator=(const RTLIL::SigSpec &other)
 	return *this;
 }
 
-RTLIL::SigSpec::SigSpec(const RTLIL::Const &value)
+DriverSpec::DriverSpec(const RTLIL::Const &value)
 {
 	cover("kernel.rtlil.sigspec.init.const");
 
@@ -167,7 +176,7 @@ RTLIL::SigSpec::SigSpec(const RTLIL::Const &value)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const RTLIL::SigChunk &chunk)
+DriverSpec::DriverSpec(const DriverChunk &chunk)
 {
 	cover("kernel.rtlil.sigspec.init.chunk");
 
@@ -181,7 +190,7 @@ RTLIL::SigSpec::SigSpec(const RTLIL::SigChunk &chunk)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(RTLIL::Wire *wire)
+DriverSpec::DriverSpec(RTLIL::Wire *wire)
 {
 	cover("kernel.rtlil.sigspec.init.wire");
 
@@ -195,7 +204,7 @@ RTLIL::SigSpec::SigSpec(RTLIL::Wire *wire)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(RTLIL::Wire *wire, int offset, int width)
+DriverSpec::DriverSpec(RTLIL::Wire *wire, int offset, int width)
 {
 	cover("kernel.rtlil.sigspec.init.wire_part");
 
@@ -209,7 +218,7 @@ RTLIL::SigSpec::SigSpec(RTLIL::Wire *wire, int offset, int width)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const std::string &str)
+DriverSpec::DriverSpec(const std::string &str)
 {
 	cover("kernel.rtlil.sigspec.init.str");
 
@@ -223,7 +232,7 @@ RTLIL::SigSpec::SigSpec(const std::string &str)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(int val, int width)
+DriverSpec::DriverSpec(int val, int width)
 {
 	cover("kernel.rtlil.sigspec.init.int");
 
@@ -234,7 +243,7 @@ RTLIL::SigSpec::SigSpec(int val, int width)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(RTLIL::State bit, int width)
+DriverSpec::DriverSpec(RTLIL::State bit, int width)
 {
 	cover("kernel.rtlil.sigspec.init.state");
 
@@ -245,7 +254,7 @@ RTLIL::SigSpec::SigSpec(RTLIL::State bit, int width)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const RTLIL::SigBit &bit, int width)
+DriverSpec::DriverSpec(const DriverBit &bit, int width)
 {
 	cover("kernel.rtlil.sigspec.init.bit");
 
@@ -261,7 +270,7 @@ RTLIL::SigSpec::SigSpec(const RTLIL::SigBit &bit, int width)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const std::vector<RTLIL::SigChunk> &chunks)
+DriverSpec::DriverSpec(const std::vector<DriverChunk> &chunks)
 {
 	cover("kernel.rtlil.sigspec.init.stdvec_chunks");
 
@@ -272,7 +281,7 @@ RTLIL::SigSpec::SigSpec(const std::vector<RTLIL::SigChunk> &chunks)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const std::vector<RTLIL::SigBit> &bits)
+DriverSpec::DriverSpec(const std::vector<DriverBit> &bits)
 {
 	cover("kernel.rtlil.sigspec.init.stdvec_bits");
 
@@ -283,7 +292,7 @@ RTLIL::SigSpec::SigSpec(const std::vector<RTLIL::SigBit> &bits)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const pool<RTLIL::SigBit> &bits)
+DriverSpec::DriverSpec(const pool<DriverBit> &bits)
 {
 	cover("kernel.rtlil.sigspec.init.pool_bits");
 
@@ -294,7 +303,7 @@ RTLIL::SigSpec::SigSpec(const pool<RTLIL::SigBit> &bits)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(const std::set<RTLIL::SigBit> &bits)
+DriverSpec::DriverSpec(const std::set<DriverBit> &bits)
 {
 	cover("kernel.rtlil.sigspec.init.stdset_bits");
 
@@ -305,19 +314,19 @@ RTLIL::SigSpec::SigSpec(const std::set<RTLIL::SigBit> &bits)
 	check();
 }
 
-RTLIL::SigSpec::SigSpec(bool bit)
+DriverSpec::DriverSpec(bool bit)
 {
 	cover("kernel.rtlil.sigspec.init.bool");
 
 	width_ = 0;
 	hash_ = 0;
-	append(SigBit(bit));
+	append(DriverBit(bit));
 	check();
 }
 
-void RTLIL::SigSpec::pack() const
+void DriverSpec::pack() const
 {
-	RTLIL::SigSpec *that = (RTLIL::SigSpec*)this;
+	DriverSpec *that = (DriverSpec*)this;
 
 	if (that->bits_.empty())
 		return;
@@ -325,10 +334,10 @@ void RTLIL::SigSpec::pack() const
 	cover("kernel.rtlil.sigspec.convert.pack");
 	log_assert(that->chunks_.empty());
 
-	std::vector<RTLIL::SigBit> old_bits;
+	std::vector<DriverBit> old_bits;
 	old_bits.swap(that->bits_);
 
-	RTLIL::SigChunk *last = NULL;
+	DriverChunk *last = NULL;
 	int last_end_offset = 0;
 
 	for (auto &bit : old_bits) {
@@ -351,9 +360,9 @@ void RTLIL::SigSpec::pack() const
 	check();
 }
 
-void RTLIL::SigSpec::unpack() const
+void DriverSpec::unpack() const
 {
-	RTLIL::SigSpec *that = (RTLIL::SigSpec*)this;
+	DriverSpec *that = (DriverSpec*)this;
 
 	if (that->chunks_.empty())
 		return;
@@ -370,9 +379,9 @@ void RTLIL::SigSpec::unpack() const
 	that->hash_ = 0;
 }
 
-void RTLIL::SigSpec::updhash() const
+void DriverSpec::updhash() const
 {
-	RTLIL::SigSpec *that = (RTLIL::SigSpec*)this;
+	DriverSpec *that = (DriverSpec*)this;
 
 	if (that->hash_ != 0)
 		return;
@@ -395,22 +404,22 @@ void RTLIL::SigSpec::updhash() const
 		that->hash_ = 1;
 }
 
-void RTLIL::SigSpec::sort()
+void DriverSpec::sort()
 {
 	unpack();
 	cover("kernel.rtlil.sigspec.sort");
 	std::sort(bits_.begin(), bits_.end());
 }
 
-void RTLIL::SigSpec::sort_and_unify()
+void DriverSpec::sort_and_unify()
 {
 	unpack();
 	cover("kernel.rtlil.sigspec.sort_and_unify");
 
 	// A copy of the bits vector is used to prevent duplicating the logic from
-	// SigSpec::SigSpec(std::vector<SigBit>).  This incurrs an extra copy but
+	// DriverSpec::DriverSpec(std::vector<DriverBit>).  This incurrs an extra copy but
 	// that isn't showing up as significant in profiles.
-	std::vector<SigBit> unique_bits = bits_;
+	std::vector<DriverBit> unique_bits = bits_;
 	std::sort(unique_bits.begin(), unique_bits.end());
 	auto last = std::unique(unique_bits.begin(), unique_bits.end());
 	unique_bits.erase(last, unique_bits.end());
@@ -418,12 +427,12 @@ void RTLIL::SigSpec::sort_and_unify()
 	*this = unique_bits;
 }
 
-void RTLIL::SigSpec::replace(const RTLIL::SigSpec &pattern, const RTLIL::SigSpec &with)
+void DriverSpec::replace(const DriverSpec &pattern, const DriverSpec &with)
 {
 	replace(pattern, with, this);
 }
 
-void RTLIL::SigSpec::replace(const RTLIL::SigSpec &pattern, const RTLIL::SigSpec &with, RTLIL::SigSpec *other) const
+void DriverSpec::replace(const DriverSpec &pattern, const DriverSpec &with, DriverSpec *other) const
 {
 	log_assert(other != NULL);
 	log_assert(width_ == other->width_);
@@ -447,12 +456,12 @@ void RTLIL::SigSpec::replace(const RTLIL::SigSpec &pattern, const RTLIL::SigSpec
 	other->check();
 }
 
-void RTLIL::SigSpec::replace(const dict<RTLIL::SigBit, RTLIL::SigBit> &rules)
+void DriverSpec::replace(const dict<DriverBit, DriverBit> &rules)
 {
 	replace(rules, this);
 }
 
-void RTLIL::SigSpec::replace(const dict<RTLIL::SigBit, RTLIL::SigBit> &rules, RTLIL::SigSpec *other) const
+void DriverSpec::replace(const dict<DriverBit, DriverBit> &rules, DriverSpec *other) const
 {
 	cover("kernel.rtlil.sigspec.replace_dict");
 
@@ -472,12 +481,12 @@ void RTLIL::SigSpec::replace(const dict<RTLIL::SigBit, RTLIL::SigBit> &rules, RT
 	other->check();
 }
 
-void RTLIL::SigSpec::replace(const std::map<RTLIL::SigBit, RTLIL::SigBit> &rules)
+void DriverSpec::replace(const std::map<DriverBit, DriverBit> &rules)
 {
 	replace(rules, this);
 }
 
-void RTLIL::SigSpec::replace(const std::map<RTLIL::SigBit, RTLIL::SigBit> &rules, RTLIL::SigSpec *other) const
+void DriverSpec::replace(const std::map<DriverBit, DriverBit> &rules, DriverSpec *other) const
 {
 	cover("kernel.rtlil.sigspec.replace_map");
 
@@ -497,18 +506,18 @@ void RTLIL::SigSpec::replace(const std::map<RTLIL::SigBit, RTLIL::SigBit> &rules
 	other->check();
 }
 
-void RTLIL::SigSpec::remove(const RTLIL::SigSpec &pattern)
+void DriverSpec::remove(const DriverSpec &pattern)
 {
 	remove2(pattern, NULL);
 }
 
-void RTLIL::SigSpec::remove(const RTLIL::SigSpec &pattern, RTLIL::SigSpec *other) const
+void DriverSpec::remove(const DriverSpec &pattern, DriverSpec *other) const
 {
-	RTLIL::SigSpec tmp = *this;
+	DriverSpec tmp = *this;
 	tmp.remove2(pattern, other);
 }
 
-void RTLIL::SigSpec::remove2(const RTLIL::SigSpec &pattern, RTLIL::SigSpec *other)
+void DriverSpec::remove2(const DriverSpec &pattern, DriverSpec *other)
 {
 	if (other)
 		cover("kernel.rtlil.sigspec.remove_other");
@@ -542,18 +551,18 @@ void RTLIL::SigSpec::remove2(const RTLIL::SigSpec &pattern, RTLIL::SigSpec *othe
 	check();
 }
 
-void RTLIL::SigSpec::remove(const pool<RTLIL::SigBit> &pattern)
+void DriverSpec::remove(const pool<DriverBit> &pattern)
 {
 	remove2(pattern, NULL);
 }
 
-void RTLIL::SigSpec::remove(const pool<RTLIL::SigBit> &pattern, RTLIL::SigSpec *other) const
+void DriverSpec::remove(const pool<DriverBit> &pattern, DriverSpec *other) const
 {
-	RTLIL::SigSpec tmp = *this;
+	DriverSpec tmp = *this;
 	tmp.remove2(pattern, other);
 }
 
-void RTLIL::SigSpec::remove2(const pool<RTLIL::SigBit> &pattern, RTLIL::SigSpec *other)
+void DriverSpec::remove2(const pool<DriverBit> &pattern, DriverSpec *other)
 {
 	if (other)
 		cover("kernel.rtlil.sigspec.remove_other");
@@ -581,7 +590,7 @@ void RTLIL::SigSpec::remove2(const pool<RTLIL::SigBit> &pattern, RTLIL::SigSpec 
 	check();
 }
 
-void RTLIL::SigSpec::remove2(const std::set<RTLIL::SigBit> &pattern, RTLIL::SigSpec *other)
+void DriverSpec::remove2(const std::set<DriverBit> &pattern, DriverSpec *other)
 {
 	if (other)
 		cover("kernel.rtlil.sigspec.remove_other");
@@ -609,7 +618,7 @@ void RTLIL::SigSpec::remove2(const std::set<RTLIL::SigBit> &pattern, RTLIL::SigS
 	check();
 }
 
-RTLIL::SigSpec RTLIL::SigSpec::extract(const RTLIL::SigSpec &pattern, const RTLIL::SigSpec *other) const
+DriverSpec DriverSpec::extract(const DriverSpec &pattern, const DriverSpec *other) const
 {
 	if (other)
 		cover("kernel.rtlil.sigspec.extract_other");
@@ -618,12 +627,12 @@ RTLIL::SigSpec RTLIL::SigSpec::extract(const RTLIL::SigSpec &pattern, const RTLI
 
 	log_assert(other == NULL || width_ == other->width_);
 
-	RTLIL::SigSpec ret;
-	std::vector<RTLIL::SigBit> bits_match = to_sigbit_vector();
+	DriverSpec ret;
+	std::vector<DriverBit> bits_match = to_sigbit_vector();
 
 	for (auto& pattern_chunk : pattern.chunks()) {
 		if (other) {
-			std::vector<RTLIL::SigBit> bits_other = other->to_sigbit_vector();
+			std::vector<DriverBit> bits_other = other->to_sigbit_vector();
 			for (int i = 0; i < width_; i++)
 				if (bits_match[i].wire &&
 					bits_match[i].wire == pattern_chunk.wire &&
@@ -644,7 +653,7 @@ RTLIL::SigSpec RTLIL::SigSpec::extract(const RTLIL::SigSpec &pattern, const RTLI
 	return ret;
 }
 
-RTLIL::SigSpec RTLIL::SigSpec::extract(const pool<RTLIL::SigBit> &pattern, const RTLIL::SigSpec *other) const
+DriverSpec DriverSpec::extract(const pool<DriverBit> &pattern, const DriverSpec *other) const
 {
 	if (other)
 		cover("kernel.rtlil.sigspec.extract_other");
@@ -653,11 +662,11 @@ RTLIL::SigSpec RTLIL::SigSpec::extract(const pool<RTLIL::SigBit> &pattern, const
 
 	log_assert(other == NULL || width_ == other->width_);
 
-	std::vector<RTLIL::SigBit> bits_match = to_sigbit_vector();
-	RTLIL::SigSpec ret;
+	std::vector<DriverBit> bits_match = to_sigbit_vector();
+	DriverSpec ret;
 
 	if (other) {
-		std::vector<RTLIL::SigBit> bits_other = other->to_sigbit_vector();
+		std::vector<DriverBit> bits_other = other->to_sigbit_vector();
 		for (int i = 0; i < width_; i++)
 			if (bits_match[i].wire && pattern.count(bits_match[i]))
 				ret.append(bits_other[i]);
@@ -671,7 +680,7 @@ RTLIL::SigSpec RTLIL::SigSpec::extract(const pool<RTLIL::SigBit> &pattern, const
 	return ret;
 }
 
-void RTLIL::SigSpec::replace(int offset, const RTLIL::SigSpec &with)
+void DriverSpec::replace(int offset, const DriverSpec &with)
 {
 	cover("kernel.rtlil.sigspec.replace_pos");
 
@@ -688,13 +697,13 @@ void RTLIL::SigSpec::replace(int offset, const RTLIL::SigSpec &with)
 	check();
 }
 
-void RTLIL::SigSpec::remove_const()
+void DriverSpec::remove_const()
 {
 	if (packed())
 	{
 		cover("kernel.rtlil.sigspec.remove_const.packed");
 
-		std::vector<RTLIL::SigChunk> new_chunks;
+		std::vector<DriverChunk> new_chunks;
 		new_chunks.reserve(GetSize(chunks_));
 
 		width_ = 0;
@@ -716,7 +725,7 @@ void RTLIL::SigSpec::remove_const()
 	{
 		cover("kernel.rtlil.sigspec.remove_const.unpacked");
 
-		std::vector<RTLIL::SigBit> new_bits;
+		std::vector<DriverBit> new_bits;
 		new_bits.reserve(width_);
 
 		for (auto &bit : bits_)
@@ -730,7 +739,7 @@ void RTLIL::SigSpec::remove_const()
 	check();
 }
 
-void RTLIL::SigSpec::remove(int offset, int length)
+void DriverSpec::remove(int offset, int length)
 {
 	cover("kernel.rtlil.sigspec.remove_pos");
 
@@ -746,14 +755,14 @@ void RTLIL::SigSpec::remove(int offset, int length)
 	check();
 }
 
-RTLIL::SigSpec RTLIL::SigSpec::extract(int offset, int length) const
+DriverSpec DriverSpec::extract(int offset, int length) const
 {
 	unpack();
 	cover("kernel.rtlil.sigspec.extract_pos");
-	return std::vector<RTLIL::SigBit>(bits_.begin() + offset, bits_.begin() + offset + length);
+	return std::vector<DriverBit>(bits_.begin() + offset, bits_.begin() + offset + length);
 }
 
-void RTLIL::SigSpec::append(const RTLIL::SigSpec &signal)
+void DriverSpec::append(const DriverSpec &signal)
 {
 	if (signal.width_ == 0)
 		return;
@@ -792,7 +801,7 @@ void RTLIL::SigSpec::append(const RTLIL::SigSpec &signal)
 	check();
 }
 
-void RTLIL::SigSpec::append(const RTLIL::SigBit &bit)
+void DriverSpec::append(const DriverBit &bit)
 {
 	if (packed())
 	{
@@ -823,7 +832,7 @@ void RTLIL::SigSpec::append(const RTLIL::SigBit &bit)
 	check();
 }
 
-void RTLIL::SigSpec::extend_u0(int width, bool is_signed)
+void DriverSpec::extend_u0(int width, bool is_signed)
 {
 	cover("kernel.rtlil.sigspec.extend_u0");
 
@@ -833,7 +842,7 @@ void RTLIL::SigSpec::extend_u0(int width, bool is_signed)
 		remove(width, width_ - width);
 
 	if (width_ < width) {
-		RTLIL::SigBit padding = width_ > 0 ? (*this)[width_ - 1] : RTLIL::State::Sx;
+		DriverBit padding = width_ > 0 ? (*this)[width_ - 1] : RTLIL::State::Sx;
 		if (!is_signed)
 			padding = RTLIL::State::S0;
 		while (width_ < width)
@@ -842,18 +851,18 @@ void RTLIL::SigSpec::extend_u0(int width, bool is_signed)
 
 }
 
-RTLIL::SigSpec RTLIL::SigSpec::repeat(int num) const
+DriverSpec DriverSpec::repeat(int num) const
 {
 	cover("kernel.rtlil.sigspec.repeat");
 
-	RTLIL::SigSpec sig;
+	DriverSpec sig;
 	for (int i = 0; i < num; i++)
 		sig.append(*this);
 	return sig;
 }
 
 #ifndef NDEBUG
-void RTLIL::SigSpec::check(Module *mod) const
+void DriverSpec::check(Module *mod) const
 {
 	if (width_ > 64)
 	{
@@ -865,7 +874,7 @@ void RTLIL::SigSpec::check(Module *mod) const
 
 		int w = 0;
 		for (size_t i = 0; i < chunks_.size(); i++) {
-			const RTLIL::SigChunk &chunk = chunks_[i];
+			const DriverChunk &chunk = chunks_[i];
 			log_assert(chunk.width != 0);
 			if (chunk.wire == NULL) {
 				if (i > 0)
@@ -903,7 +912,7 @@ void RTLIL::SigSpec::check(Module *mod) const
 }
 #endif
 
-bool RTLIL::SigSpec::operator <(const RTLIL::SigSpec &other) const
+bool DriverSpec::operator <(const DriverSpec &other) const
 {
 	cover("kernel.rtlil.sigspec.comp_lt");
 
@@ -935,7 +944,7 @@ bool RTLIL::SigSpec::operator <(const RTLIL::SigSpec &other) const
 	return false;
 }
 
-bool RTLIL::SigSpec::operator ==(const RTLIL::SigSpec &other) const
+bool DriverSpec::operator ==(const DriverSpec &other) const
 {
 	cover("kernel.rtlil.sigspec.comp_eq");
 
@@ -945,8 +954,8 @@ bool RTLIL::SigSpec::operator ==(const RTLIL::SigSpec &other) const
 	if (width_ != other.width_)
 		return false;
 
-	// Without this, SigSpec() == SigSpec(State::S0, 0) will fail
-	//   since the RHS will contain one SigChunk of width 0 causing
+	// Without this, DriverSpec() == DriverSpec(State::S0, 0) will fail
+	//   since the RHS will contain one DriverChunk of width 0 causing
 	//   the size check below to fail
 	if (width_ == 0)
 		return true;
@@ -973,7 +982,7 @@ bool RTLIL::SigSpec::operator ==(const RTLIL::SigSpec &other) const
 	return true;
 }
 
-bool RTLIL::SigSpec::is_wire() const
+bool DriverSpec::is_wire() const
 {
 	cover("kernel.rtlil.sigspec.is_wire");
 
@@ -981,7 +990,7 @@ bool RTLIL::SigSpec::is_wire() const
 	return GetSize(chunks_) == 1 && chunks_[0].wire && chunks_[0].wire->width == width_;
 }
 
-bool RTLIL::SigSpec::is_chunk() const
+bool DriverSpec::is_chunk() const
 {
 	cover("kernel.rtlil.sigspec.is_chunk");
 
@@ -989,7 +998,7 @@ bool RTLIL::SigSpec::is_chunk() const
 	return GetSize(chunks_) == 1;
 }
 
-bool RTLIL::SigSpec::is_fully_const() const
+bool DriverSpec::is_fully_const() const
 {
 	cover("kernel.rtlil.sigspec.is_fully_const");
 
@@ -1000,7 +1009,7 @@ bool RTLIL::SigSpec::is_fully_const() const
 	return true;
 }
 
-bool RTLIL::SigSpec::is_fully_zero() const
+bool DriverSpec::is_fully_zero() const
 {
 	cover("kernel.rtlil.sigspec.is_fully_zero");
 
@@ -1015,7 +1024,7 @@ bool RTLIL::SigSpec::is_fully_zero() const
 	return true;
 }
 
-bool RTLIL::SigSpec::is_fully_ones() const
+bool DriverSpec::is_fully_ones() const
 {
 	cover("kernel.rtlil.sigspec.is_fully_ones");
 
@@ -1030,7 +1039,7 @@ bool RTLIL::SigSpec::is_fully_ones() const
 	return true;
 }
 
-bool RTLIL::SigSpec::is_fully_def() const
+bool DriverSpec::is_fully_def() const
 {
 	cover("kernel.rtlil.sigspec.is_fully_def");
 
@@ -1045,7 +1054,7 @@ bool RTLIL::SigSpec::is_fully_def() const
 	return true;
 }
 
-bool RTLIL::SigSpec::is_fully_undef() const
+bool DriverSpec::is_fully_undef() const
 {
 	cover("kernel.rtlil.sigspec.is_fully_undef");
 
@@ -1060,7 +1069,7 @@ bool RTLIL::SigSpec::is_fully_undef() const
 	return true;
 }
 
-bool RTLIL::SigSpec::has_const() const
+bool DriverSpec::has_const() const
 {
 	cover("kernel.rtlil.sigspec.has_const");
 
@@ -1071,7 +1080,7 @@ bool RTLIL::SigSpec::has_const() const
 	return false;
 }
 
-bool RTLIL::SigSpec::has_marked_bits() const
+bool DriverSpec::has_marked_bits() const
 {
 	cover("kernel.rtlil.sigspec.has_marked_bits");
 
@@ -1085,7 +1094,7 @@ bool RTLIL::SigSpec::has_marked_bits() const
 	return false;
 }
 
-bool RTLIL::SigSpec::is_onehot(int *pos) const
+bool DriverSpec::is_onehot(int *pos) const
 {
 	cover("kernel.rtlil.sigspec.is_onehot");
 
@@ -1098,7 +1107,7 @@ bool RTLIL::SigSpec::is_onehot(int *pos) const
 	return false;
 }
 
-bool RTLIL::SigSpec::as_bool() const
+bool DriverSpec::as_bool() const
 {
 	cover("kernel.rtlil.sigspec.as_bool");
 
@@ -1109,7 +1118,7 @@ bool RTLIL::SigSpec::as_bool() const
 	return false;
 }
 
-int RTLIL::SigSpec::as_int(bool is_signed) const
+int DriverSpec::as_int(bool is_signed) const
 {
 	cover("kernel.rtlil.sigspec.as_int");
 
@@ -1120,7 +1129,7 @@ int RTLIL::SigSpec::as_int(bool is_signed) const
 	return 0;
 }
 
-std::string RTLIL::SigSpec::as_string() const
+std::string DriverSpec::as_string() const
 {
 	cover("kernel.rtlil.sigspec.as_string");
 
@@ -1128,7 +1137,7 @@ std::string RTLIL::SigSpec::as_string() const
 	std::string str;
 	str.reserve(size());
 	for (size_t i = chunks_.size(); i > 0; i--) {
-		const RTLIL::SigChunk &chunk = chunks_[i-1];
+		const DriverChunk &chunk = chunks_[i-1];
 		if (chunk.wire != NULL)
 			str.append(chunk.width, '?');
 		else
@@ -1137,7 +1146,7 @@ std::string RTLIL::SigSpec::as_string() const
 	return str;
 }
 
-RTLIL::Const RTLIL::SigSpec::as_const() const
+RTLIL::Const DriverSpec::as_const() const
 {
 	cover("kernel.rtlil.sigspec.as_const");
 
@@ -1148,7 +1157,7 @@ RTLIL::Const RTLIL::SigSpec::as_const() const
 	return RTLIL::Const();
 }
 
-RTLIL::Wire *RTLIL::SigSpec::as_wire() const
+RTLIL::Wire *DriverSpec::as_wire() const
 {
 	cover("kernel.rtlil.sigspec.as_wire");
 
@@ -1157,7 +1166,7 @@ RTLIL::Wire *RTLIL::SigSpec::as_wire() const
 	return chunks_[0].wire;
 }
 
-RTLIL::SigChunk RTLIL::SigSpec::as_chunk() const
+DriverChunk DriverSpec::as_chunk() const
 {
 	cover("kernel.rtlil.sigspec.as_chunk");
 
@@ -1166,18 +1175,18 @@ RTLIL::SigChunk RTLIL::SigSpec::as_chunk() const
 	return chunks_[0];
 }
 
-RTLIL::SigBit RTLIL::SigSpec::as_bit() const
+DriverBit DriverSpec::as_bit() const
 {
 	cover("kernel.rtlil.sigspec.as_bit");
 
 	log_assert(width_ == 1);
 	if (packed())
-		return RTLIL::SigBit(*chunks_.begin());
+		return DriverBit(*chunks_.begin());
 	else
 		return bits_[0];
 }
 
-bool RTLIL::SigSpec::match(const char* pattern) const
+bool DriverSpec::match(const char* pattern) const
 {
 	cover("kernel.rtlil.sigspec.match");
 
@@ -1206,32 +1215,32 @@ bool RTLIL::SigSpec::match(const char* pattern) const
 	return true;
 }
 
-std::set<RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_set() const
+std::set<DriverBit> DriverSpec::to_sigbit_set() const
 {
 	cover("kernel.rtlil.sigspec.to_sigbit_set");
 
 	pack();
-	std::set<RTLIL::SigBit> sigbits;
+	std::set<DriverBit> sigbits;
 	for (auto &c : chunks_)
 		for (int i = 0; i < c.width; i++)
-			sigbits.insert(RTLIL::SigBit(c, i));
+			sigbits.insert(DriverBit(c, i));
 	return sigbits;
 }
 
-pool<RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_pool() const
+pool<DriverBit> DriverSpec::to_sigbit_pool() const
 {
 	cover("kernel.rtlil.sigspec.to_sigbit_pool");
 
 	pack();
-	pool<RTLIL::SigBit> sigbits;
+	pool<DriverBit> sigbits;
 	sigbits.reserve(size());
 	for (auto &c : chunks_)
 		for (int i = 0; i < c.width; i++)
-			sigbits.insert(RTLIL::SigBit(c, i));
+			sigbits.insert(DriverBit(c, i));
 	return sigbits;
 }
 
-std::vector<RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_vector() const
+std::vector<DriverBit> DriverSpec::to_sigbit_vector() const
 {
 	cover("kernel.rtlil.sigspec.to_sigbit_vector");
 
@@ -1239,7 +1248,7 @@ std::vector<RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_vector() const
 	return bits_;
 }
 
-std::map<RTLIL::SigBit, RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_map(const RTLIL::SigSpec &other) const
+std::map<DriverBit, DriverBit> DriverSpec::to_sigbit_map(const DriverSpec &other) const
 {
 	cover("kernel.rtlil.sigspec.to_sigbit_map");
 
@@ -1248,14 +1257,14 @@ std::map<RTLIL::SigBit, RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_map(const RTLIL
 
 	log_assert(width_ == other.width_);
 
-	std::map<RTLIL::SigBit, RTLIL::SigBit> new_map;
+	std::map<DriverBit, DriverBit> new_map;
 	for (int i = 0; i < width_; i++)
 		new_map[bits_[i]] = other.bits_[i];
 
 	return new_map;
 }
 
-dict<RTLIL::SigBit, RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_dict(const RTLIL::SigSpec &other) const
+dict<DriverBit, DriverBit> DriverSpec::to_sigbit_dict(const DriverSpec &other) const
 {
 	cover("kernel.rtlil.sigspec.to_sigbit_dict");
 
@@ -1264,7 +1273,7 @@ dict<RTLIL::SigBit, RTLIL::SigBit> RTLIL::SigSpec::to_sigbit_dict(const RTLIL::S
 
 	log_assert(width_ == other.width_);
 
-	dict<RTLIL::SigBit, RTLIL::SigBit> new_map;
+	dict<DriverBit, DriverBit> new_map;
 	new_map.reserve(size());
 	for (int i = 0; i < width_; i++)
 		new_map[bits_[i]] = other.bits_[i];
@@ -1287,7 +1296,7 @@ static int sigspec_parse_get_dummy_line_num()
 	return 0;
 }
 
-bool RTLIL::SigSpec::parse(RTLIL::SigSpec &sig, RTLIL::Module *module, std::string str)
+bool DriverSpec::parse(DriverSpec &sig, RTLIL::Module *module, std::string str)
 {
 	cover("kernel.rtlil.sigspec.parse");
 
@@ -1296,7 +1305,7 @@ bool RTLIL::SigSpec::parse(RTLIL::SigSpec &sig, RTLIL::Module *module, std::stri
 	std::vector<std::string> tokens;
 	sigspec_parse_split(tokens, str, ',');
 
-	sig = RTLIL::SigSpec();
+	sig = DriverSpec();
 	for (int tokidx = int(tokens.size())-1; tokidx >= 0; tokidx--)
 	{
 		std::string netname = tokens[tokidx];
@@ -1353,7 +1362,7 @@ bool RTLIL::SigSpec::parse(RTLIL::SigSpec &sig, RTLIL::Module *module, std::stri
 				int a = atoi(index_tokens.at(0).c_str());
 				if (a < 0 || a >= wire->width)
 					return false;
-				sig.append(RTLIL::SigSpec(wire, a));
+				sig.append(DriverSpec(wire, a));
 			} else {
 				cover("kernel.rtlil.sigspec.parse.part_sel");
 				int a = atoi(index_tokens.at(0).c_str());
@@ -1366,7 +1375,7 @@ bool RTLIL::SigSpec::parse(RTLIL::SigSpec &sig, RTLIL::Module *module, std::stri
 					return false;
 				if (b < 0 || b >= wire->width)
 					return false;
-				sig.append(RTLIL::SigSpec(wire, a, b-a+1));
+				sig.append(DriverSpec(wire, a, b-a+1));
 			}
 		} else
 			sig.append(wire);
@@ -1375,7 +1384,7 @@ bool RTLIL::SigSpec::parse(RTLIL::SigSpec &sig, RTLIL::Module *module, std::stri
 	return true;
 }
 
-bool RTLIL::SigSpec::parse_sel(RTLIL::SigSpec &sig, RTLIL::Design *design, RTLIL::Module *module, std::string str)
+bool DriverSpec::parse_sel(DriverSpec &sig, RTLIL::Design *design, RTLIL::Module *module, std::string str)
 {
 	if (str.empty() || str[0] != '@')
 		return parse(sig, module, str);
@@ -1386,7 +1395,7 @@ bool RTLIL::SigSpec::parse_sel(RTLIL::SigSpec &sig, RTLIL::Design *design, RTLIL
 	if (design->selection_vars.count(str) == 0)
 		return false;
 
-	sig = RTLIL::SigSpec();
+	sig = DriverSpec();
 	RTLIL::Selection &sel = design->selection_vars.at(str);
 	for (auto &it : module->wires_)
 		if (sel.selected_member(module->name, it.first))
@@ -1395,17 +1404,17 @@ bool RTLIL::SigSpec::parse_sel(RTLIL::SigSpec &sig, RTLIL::Design *design, RTLIL
 	return true;
 }
 
-bool RTLIL::SigSpec::parse_rhs(const RTLIL::SigSpec &lhs, RTLIL::SigSpec &sig, RTLIL::Module *module, std::string str)
+bool DriverSpec::parse_rhs(const DriverSpec &lhs, DriverSpec &sig, RTLIL::Module *module, std::string str)
 {
 	if (str == "0") {
 		cover("kernel.rtlil.sigspec.parse.rhs_zeros");
-		sig = RTLIL::SigSpec(RTLIL::State::S0, lhs.width_);
+		sig = DriverSpec(RTLIL::State::S0, lhs.width_);
 		return true;
 	}
 
 	if (str == "~0") {
 		cover("kernel.rtlil.sigspec.parse.rhs_ones");
-		sig = RTLIL::SigSpec(RTLIL::State::S1, lhs.width_);
+		sig = DriverSpec(RTLIL::State::S1, lhs.width_);
 		return true;
 	}
 
@@ -1413,7 +1422,7 @@ bool RTLIL::SigSpec::parse_rhs(const RTLIL::SigSpec &lhs, RTLIL::SigSpec &sig, R
 		char *p = (char*)str.c_str(), *endptr;
 		long int val = strtol(p, &endptr, 10);
 		if (endptr && endptr != p && *endptr == 0) {
-			sig = RTLIL::SigSpec(val, lhs.width_);
+			sig = DriverSpec(val, lhs.width_);
 			cover("kernel.rtlil.sigspec.parse.rhs_dec");
 			return true;
 		}
