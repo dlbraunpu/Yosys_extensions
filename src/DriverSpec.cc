@@ -15,16 +15,16 @@ bool DriverChunk::has_same_object(const DriverBit& bit) const
 
 DriverChunk::DriverChunk()
 {
-	wire = NULL;
-        cell = NULL;
+	wire = nullptr;
+        cell = nullptr;
 	width = 0;
 	offset = 0;
 }
 
 DriverChunk::DriverChunk(const RTLIL::Const &value)
 {
-	wire = NULL;
-        cell = NULL;
+	wire = nullptr;
+        cell = nullptr;
 	data = value.bits;
 	width = GetSize(data);
 	offset = 0;
@@ -34,7 +34,7 @@ DriverChunk::DriverChunk(RTLIL::Wire *wire)
 {
 	log_assert(wire != nullptr);
 	this->wire = wire;
-        this->cell = NULL;
+        this->cell = nullptr;
 	this->width = wire->width;
 	this->offset = 0;
 }
@@ -44,7 +44,7 @@ DriverChunk::DriverChunk(RTLIL::Wire *wire, int offset, int width)
         // Doug:  check that offset/width are not beyond wire width?
 	log_assert(wire != nullptr);
 	this->wire = wire;
-        this->cell = NULL;
+        this->cell = nullptr;
 	this->width = width;
 	this->offset = offset;
 }
@@ -54,7 +54,7 @@ DriverChunk::DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port)
 	log_assert(cell != nullptr);
 	log_assert(!port.empty());
         log_assert(cell->hasPort(port));
-	this->wire = NULL;
+	this->wire = nullptr;
         this->cell = cell;
         this->port = port;
 	this->width = cell->getPort(port).size();
@@ -67,8 +67,8 @@ DriverChunk::DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port, int off
 	log_assert(cell != nullptr);
 	log_assert(!port.empty());
         log_assert(cell->hasPort(port));
-	this->wire = NULL;
-        this->cell = NULL;
+	this->wire = nullptr;
+        this->cell = nullptr;
 	this->width = width;
 	this->offset = offset;
 }
@@ -76,8 +76,8 @@ DriverChunk::DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port, int off
 
 DriverChunk::DriverChunk(const std::string &str)
 {
-	wire = NULL;
-        cell = NULL;
+	wire = nullptr;
+        cell = nullptr;
 	data = RTLIL::Const(str).bits;
 	width = GetSize(data);
 	offset = 0;
@@ -85,8 +85,8 @@ DriverChunk::DriverChunk(const std::string &str)
 
 DriverChunk::DriverChunk(int val, int width)
 {
-	wire = NULL;
-        cell = NULL;
+	wire = nullptr;
+        cell = nullptr;
 	data = RTLIL::Const(val, width).bits;
 	this->width = GetSize(data);
 	offset = 0;
@@ -94,8 +94,8 @@ DriverChunk::DriverChunk(int val, int width)
 
 DriverChunk::DriverChunk(RTLIL::State bit, int width)
 {
-	wire = NULL;
-        cell = NULL;
+	wire = nullptr;
+        cell = nullptr;
 	data = RTLIL::Const(bit, width).bits;
 	this->width = GetSize(data);
 	offset = 0;
@@ -104,9 +104,9 @@ DriverChunk::DriverChunk(RTLIL::State bit, int width)
 DriverChunk::DriverChunk(const DriverBit &bit)
 {
 	wire = bit.wire;
-        cell = NULL;
+        cell = nullptr;
 	offset = 0;
-	if (wire == NULL)
+	if (wire == nullptr)
 		data = RTLIL::Const(bit.data).bits;
 	else
 		offset = bit.offset;
@@ -357,7 +357,7 @@ DriverSpec::DriverSpec(const DriverBit &bit, int width)
 	cover("driverspec.init.bit");
 
 	if (width != 0) {
-		if (bit.wire == NULL && bit.cell == NULL)
+		if (bit.wire == nullptr && bit.cell == nullptr)
 			chunks_.emplace_back(bit.data, width);
 		else
 			for (int i = 0; i < width; i++)
@@ -435,7 +435,7 @@ void DriverSpec::pack() const
 	std::vector<DriverBit> old_bits;
 	old_bits.swap(that->bits_);
 
-	DriverChunk *last = NULL;
+	DriverChunk *last = nullptr;
 	int last_end_offset = 0;
 
 	for (auto &bit : old_bits) {
@@ -489,10 +489,10 @@ void DriverSpec::updhash() const
 
 	that->hash_ = mkhash_init;
 	for (auto &c : that->chunks_)
-		if (c.wire == NULL && c.cell == NULL) {
+		if (c.wire == nullptr && c.cell == nullptr) {
 			for (auto &v : c.data)
 				that->hash_ = mkhash(that->hash_, v);
-		} else if (c.cell == NULL) {
+		} else if (c.cell == nullptr) {
                         // A wire
 			that->hash_ = mkhash(that->hash_, c.wire->name.index_);
 			that->hash_ = mkhash(that->hash_, c.offset);
@@ -539,7 +539,7 @@ void DriverSpec::replace(const DriverSpec &pattern, const DriverSpec &with)
 
 void DriverSpec::replace(const DriverSpec &pattern, const DriverSpec &with, DriverSpec *other) const
 {
-	log_assert(other != NULL);
+	log_assert(other != nullptr);
 	log_assert(width_ == other->width_);
 	log_assert(pattern.width_ == with.width_);
 
@@ -549,7 +549,7 @@ void DriverSpec::replace(const DriverSpec &pattern, const DriverSpec &with, Driv
 	other->unpack();
 
 	for (int i = 0; i < GetSize(pattern.bits_); i++) {
-		if (pattern.bits_[i].wire != NULL || pattern.bits_[i].cell != NULL) {
+		if (pattern.bits_[i].wire != nullptr || pattern.bits_[i].cell != nullptr) {
 			for (int j = 0; j < GetSize(bits_); j++) {
 				if (bits_[j] == pattern.bits_[i]) {
 					other->bits_[j] = with.bits_[i];
@@ -570,7 +570,7 @@ void DriverSpec::replace(const dict<DriverBit, DriverBit> &rules, DriverSpec *ot
 {
 	cover("driverspec.replace_dict");
 
-	log_assert(other != NULL);
+	log_assert(other != nullptr);
 	log_assert(width_ == other->width_);
 
 	if (rules.empty()) return;
@@ -595,7 +595,7 @@ void DriverSpec::replace(const std::map<DriverBit, DriverBit> &rules, DriverSpec
 {
 	cover("driverspec.replace_map");
 
-	log_assert(other != NULL);
+	log_assert(other != nullptr);
 	log_assert(width_ == other->width_);
 
 	if (rules.empty()) return;
@@ -613,7 +613,7 @@ void DriverSpec::replace(const std::map<DriverBit, DriverBit> &rules, DriverSpec
 
 void DriverSpec::remove(const DriverSpec &pattern)
 {
-	remove2(pattern, NULL);
+	remove2(pattern, nullptr);
 }
 
 void DriverSpec::remove(const DriverSpec &pattern, DriverSpec *other) const
@@ -630,7 +630,7 @@ void DriverSpec::remove2(const DriverSpec &pattern, DriverSpec *other)
 		cover("driverspec.remove");
 
 	unpack();
-	if (other != NULL) {
+	if (other != nullptr) {
 		log_assert(width_ == other->width_);
 		other->unpack();
 	}
@@ -647,7 +647,7 @@ void DriverSpec::remove2(const DriverSpec &pattern, DriverSpec *other)
 				b.offset < pchunk.offset + pchunk.width) {
 				bits_.erase(bits_.begin() + i);
 				width_--;
-				if (other != NULL) {
+				if (other != nullptr) {
 					other->bits_.erase(other->bits_.begin() + i);
 					other->width_--;
 				}
@@ -660,7 +660,7 @@ void DriverSpec::remove2(const DriverSpec &pattern, DriverSpec *other)
 
 void DriverSpec::remove(const pool<DriverBit> &pattern)
 {
-	remove2(pattern, NULL);
+	remove2(pattern, nullptr);
 }
 
 void DriverSpec::remove(const pool<DriverBit> &pattern, DriverSpec *other) const
@@ -678,7 +678,7 @@ void DriverSpec::remove2(const pool<DriverBit> &pattern, DriverSpec *other)
 
 	unpack();
 
-	if (other != NULL) {
+	if (other != nullptr) {
 		log_assert(width_ == other->width_);
 		other->unpack();
 	}
@@ -687,7 +687,7 @@ void DriverSpec::remove2(const pool<DriverBit> &pattern, DriverSpec *other)
 		if (bits_[i].is_object() && pattern.count(bits_[i])) {
 			bits_.erase(bits_.begin() + i);
 			width_--;
-			if (other != NULL) {
+			if (other != nullptr) {
 				other->bits_.erase(other->bits_.begin() + i);
 				other->width_--;
 			}
@@ -706,7 +706,7 @@ void DriverSpec::remove2(const std::set<DriverBit> &pattern, DriverSpec *other)
 
 	unpack();
 
-	if (other != NULL) {
+	if (other != nullptr) {
 		log_assert(width_ == other->width_);
 		other->unpack();
 	}
@@ -715,7 +715,7 @@ void DriverSpec::remove2(const std::set<DriverBit> &pattern, DriverSpec *other)
 		if (bits_[i].is_object() && pattern.count(bits_[i])) {
 			bits_.erase(bits_.begin() + i);
 			width_--;
-			if (other != NULL) {
+			if (other != nullptr) {
 				other->bits_.erase(other->bits_.begin() + i);
 				other->width_--;
 			}
@@ -741,7 +741,7 @@ DriverSpec DriverSpec::extract(const DriverSpec &pattern, const DriverSpec *othe
 	else
 		cover("driverspec.extract");
 
-	log_assert(other == NULL || width_ == other->width_);
+	log_assert(other == nullptr || width_ == other->width_);
 
 	DriverSpec ret;
 	std::vector<DriverBit> bits_match = to_driverbit_vector();
@@ -771,7 +771,7 @@ DriverSpec DriverSpec::extract(const pool<DriverBit> &pattern, const DriverSpec 
 	else
 		cover("driverspec.extract");
 
-	log_assert(other == NULL || width_ == other->width_);
+	log_assert(other == nullptr || width_ == other->width_);
 
 	std::vector<DriverBit> bits_match = to_driverbit_vector();
 	DriverSpec ret;
@@ -933,11 +933,8 @@ void DriverSpec::append(const DriverBit &bit)
 					chunks_.push_back(bit);
                                 }
                         } else {
-				if (chunks_.back().wire == bit.wire && chunks_.back().offset + chunks_.back().width == bit.offset) {
-					chunks_.back().width++;
-                                } else if (chunks_.back().cell == bit.cell && chunks_.back().port == bit.port &&
-                                           chunks_.back().offset + chunks_.back().width == bit.offset) {
-					chunks_.back().width++;
+				if (chunks_.back().has_same_object(bit) && chunks_.back().offset + chunks_.back().width == bit.offset) {
+					chunks_.back().width++;  // Efficiently merge additional bits of the same object
                                 } else {
 					chunks_.push_back(bit);
                                 }
@@ -997,7 +994,7 @@ void DriverSpec::check(Module *mod) const
 		for (size_t i = 0; i < chunks_.size(); i++) {
 			const DriverChunk &chunk = chunks_[i];
 			log_assert(chunk.width != 0);
-			if (chunk.wire != NULL) {
+			if (chunk.wire != nullptr) {
 				if (i > 0 && chunks_[i-1].wire == chunk.wire)
 					log_assert(chunk.offset != chunks_[i-1].offset + chunks_[i-1].width);
 				log_assert(chunk.offset >= 0);
@@ -1006,7 +1003,7 @@ void DriverSpec::check(Module *mod) const
 				log_assert(chunk.data.size() == 0);
 				if (mod != nullptr)
 					log_assert(chunk.wire->module == mod);
-                        } else if (chunk.cell != NULL) {
+                        } else if (chunk.cell != nullptr) {
                                 log_assert(!chunk.port.empty());
                                 log_assert(chunk.cell->hasPort(chunk.port));
 				if (i > 0 && chunks_[i-1].cell == chunk.cell && chunks_[i-1].port == chunk.port)
@@ -1153,7 +1150,7 @@ bool DriverSpec::is_fully_const() const
 
 	pack();
 	for (auto it = chunks_.begin(); it != chunks_.end(); it++)
-		if (it->width > 0 && it->wire != NULL)
+		if (it->width > 0 && it->wire != nullptr)
 			return false;
 	return true;
 }
@@ -1164,7 +1161,7 @@ bool DriverSpec::is_fully_zero() const
 
 	pack();
 	for (auto it = chunks_.begin(); it != chunks_.end(); it++) {
-		if (it->width > 0 && it->wire != NULL)
+		if (it->width > 0 && it->wire != nullptr)
 			return false;
 		for (size_t i = 0; i < it->data.size(); i++)
 			if (it->data[i] != RTLIL::State::S0)
@@ -1444,3 +1441,162 @@ dict<DriverBit, DriverBit> DriverSpec::to_driverbit_dict(const DriverSpec &other
 
 
 
+
+
+DriverFinder::DriverFinder(Yosys::RTLIL::Module *mod)
+{
+  build(mod);
+}
+
+void DriverFinder::clear()
+{
+  sigmap.clear();
+  canonical_sigbit_to_driving_cell_table.clear();
+  canonical_sigbit_to_driving_wire_table.clear();
+  module = nullptr;
+}
+
+
+void DriverFinder::build(RTLIL::Module *mod)
+{
+  clear();
+
+  module = mod;
+
+  sigmap.set(module);
+
+  for (auto cell : module->cells()) {
+    for (auto& conn : cell->connections()) {
+      // conn.first is the signal IdString, conn.second is its SigSpec
+      if (cell->output(conn.first)) {
+        RTLIL::SigSpec canonical_sig = sigmap(conn.second);
+        //log("\nCell %s port %s -> ", cell->name.c_str(),  conn.first.c_str());
+        //my_log_sigspec(conn.second);
+        //log("\ncanonical: ");
+        //my_log_sigspec(canonical_sig);
+        int idx = 0;
+        for (auto& bit : canonical_sig.to_sigbit_vector()) {
+          // sigmap(conn.second) is the canonical SigSpec.
+          // bit is a canonical SigBit
+          //log("  ");
+          //my_log_sigbit(bit);
+          log_assert(bit.is_wire());  // A cell can't drive a constant!
+          log_assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);
+          canonical_sigbit_to_driving_cell_table.emplace(bit, CellPortBit{cell, conn.first, idx});
+          ++idx;
+        }
+      }
+    }
+  }
+
+  for (auto wire : module->wires()) {
+    if (wire->port_input) {
+      RTLIL::SigSpec canonical_sig = sigmap(wire);
+      //log("\nport_input wire :\n");
+      //my_log_wire(wire);
+      //log("\ncanonical sigspec:\n");
+      //my_log_sigspec(canonical_sig);
+      int idx = 0;
+      for (auto& bit : canonical_sig.to_sigbit_vector()) {
+        // sigmap(wire) is the canonical SigSpec.
+        // bit is a canonical SigBit
+        log_assert(canonical_sigbit_to_driving_wire_table.count(bit) == 0);  // Multi-driven?
+        canonical_sigbit_to_driving_wire_table.emplace(bit, WireBit{wire, idx});
+        ++idx;
+      }
+    }
+  }
+}
+
+
+
+DriverFinder::WireBit*
+DriverFinder::getDrivingWire(const RTLIL::SigBit& sigbit)
+{
+  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
+
+  //log("getDrivingWire:  ");
+  //my_log_sigbit(sigbit);
+  //log("canonical:  ");
+  //my_log_sigbit(canonicalSigbit);
+
+  auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
+  if (iter != canonical_sigbit_to_driving_wire_table.end()) {
+    return &(iter->second);
+  }
+  return nullptr;  // Not driven by a wire
+}
+
+
+
+DriverFinder::CellPortBit*
+DriverFinder::getDrivingCell(const RTLIL::SigBit& sigbit)
+{
+  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
+
+  //log("getDrivingCell:  ");
+  //my_log_sigbit(sigbit);
+  //log("canonical:  ");
+  //my_log_sigbit(canonicalSigbit);
+
+  auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
+  if (iter != canonical_sigbit_to_driving_cell_table.end()) {
+    return &(iter->second);
+  }
+  return nullptr;  // Not driven by a cell
+}
+
+
+// Get a description of what drives the given cell (input) port.
+void
+DriverFinder::buildDriverOf(const RTLIL::Cell *cell, const RTLIL::IdString& port, DriverSpec& driver)
+{
+  RTLIL::SigSpec sigspec = cell->getPort(port);
+  buildDriverOf(sigspec, driver);
+}
+
+
+
+
+// Get a description of what drives the given module (output) port.
+void
+DriverFinder::buildDriverOf(RTLIL::Wire *wire, DriverSpec& driver)
+{
+  RTLIL::SigSpec sigspec = sigmap(wire);
+  buildDriverOf(sigspec, driver);
+}
+
+
+// Get a description of what drives the given SigSpec.
+void
+DriverFinder::buildDriverOf(const RTLIL::SigSpec& sigspec, DriverSpec& driver)
+{
+  driver = DriverSpec();  // Clear
+
+  for (auto& bit : sigspec.to_sigbit_vector()) {
+    DriverBit dBit;
+
+    if (!bit.is_wire()) {
+      // A constant data value
+      dBit = DriverBit(bit.data);
+    } else {
+      // See if the driver is a module input port (represented by a wire)
+      WireBit *wb = getDrivingWire(bit);
+      if (wb) {
+        dBit = DriverBit(wb->wire, wb->bit);
+      } else {
+        // See if the driver is a cell output port (represented by a cell/portname)
+        CellPortBit *cpb = getDrivingCell(bit);
+        if (cpb) {
+          dBit = DriverBit(cpb->cell, cpb->port, cpb->bit);
+        } else {
+          // No connection!
+          dBit = DriverBit(RTLIL::State::Sx);
+        }
+      }
+    }
+
+    driver.append(dBit);
+  }
+
+}

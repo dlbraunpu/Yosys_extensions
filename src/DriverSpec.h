@@ -1,4 +1,5 @@
 #include "kernel/yosys.h"
+#include "kernel/sigtools.h"
 
 #ifndef DRIVER_SPEC_H
 #define DRIVER_SPEC_H
@@ -332,6 +333,61 @@ inline DriverBit::DriverBit(const DriverSpec &sig) {
 	log_assert(sig.size() == 1 && sig.chunks().size() == 1);
 	*this = DriverBit(sig.chunks().front());
 }
+
+
+
+class DriverFinder {
+
+  // Struct to specify a particular bit of a particular port of a particular cell.
+  // BTW, all the built-in cells have only one output, named "\Y"
+  // Mostly for internal use
+  struct CellPortBit {
+    Yosys::RTLIL::Cell *cell;
+    Yosys::RTLIL::IdString port;
+    int bit;
+  };
+
+  // Struct to specify a particular bit of a particular wire
+  // Mostly for internal use
+  struct WireBit {
+    Yosys::RTLIL::Wire *wire;
+    int bit;
+  };
+
+  DriverFinder(Yosys::RTLIL::Module *mod);
+
+  void build(Yosys::RTLIL::Module *mod);
+  void clear();
+
+  // The most important functions
+
+  // Get a description of what drives the given cell (input) port. driver gets filled in.
+  void buildDriverOf(const Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port, DriverSpec& driver);
+
+  // Get a description of what drives the given module (output) port. driver gets filled in.
+  void buildDriverOf(Yosys::RTLIL::Wire *wire, DriverSpec& driver);
+        
+  // Get a description of what drives the given SigSpec. driver gets filled in.
+  void buildDriverOf(const Yosys::RTLIL::SigSpec& sigspec, DriverSpec& driver);
+
+
+  // Mostly for internal use
+  WireBit *getDrivingWire(const Yosys::RTLIL::SigBit& sigbit);
+  CellPortBit *getDrivingCell(const Yosys::RTLIL::SigBit& sigbit);
+
+private:
+  Yosys::RTLIL::Module *module;
+
+  // Maps:
+  // 1:  A SigSpec to its canonical SigSpec
+  // 2: A SigBit to its canonical SigBit
+  // 3: A Wire to its canonical SigSpec
+  Yosys::SigMap sigmap;
+
+  Yosys::dict<Yosys::RTLIL::SigBit, CellPortBit> canonical_sigbit_to_driving_cell_table;
+  Yosys::dict<Yosys::RTLIL::SigBit, WireBit> canonical_sigbit_to_driving_wire_table;
+
+};
 
 
 #endif
