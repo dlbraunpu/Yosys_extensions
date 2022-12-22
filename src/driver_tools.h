@@ -292,8 +292,11 @@ public:
 inline DriverBit::DriverBit() : wire(nullptr), cell(nullptr), data(Yosys::RTLIL::State::S0) { }
 inline DriverBit::DriverBit(Yosys::RTLIL::State bit) : wire(nullptr), cell(nullptr), data(bit) { }
 inline DriverBit::DriverBit(bool bit) : wire(nullptr), cell(nullptr), data(bit ? Yosys::RTLIL::State::S1 : Yosys::RTLIL::State::S0) { }
+
 inline DriverBit::DriverBit(Yosys::RTLIL::Wire *wire) : wire(wire), cell(nullptr), offset(0) { log_assert(wire && wire->width == 1); }
 inline DriverBit::DriverBit(Yosys::RTLIL::Wire *wire, int offset) : wire(wire), cell(nullptr), offset(offset) { log_assert(wire != nullptr); }
+
+
 inline DriverBit::DriverBit(const DriverChunk &chunk) : wire(chunk.wire) { log_assert(chunk.width == 1); if (wire) offset = chunk.offset; else data = chunk.data[0]; }
 inline DriverBit::DriverBit(const DriverChunk &chunk, int index) : wire(chunk.wire) { if (wire) offset = chunk.offset + index; else data = chunk.data[index]; }
 
@@ -335,8 +338,9 @@ inline DriverBit::DriverBit(const DriverSpec &sig) {
 }
 
 
-
 class DriverFinder {
+
+public:
 
   // Struct to specify a particular bit of a particular port of a particular cell.
   // BTW, all the built-in cells have only one output, named "\Y"
@@ -354,10 +358,14 @@ class DriverFinder {
     int bit;
   };
 
+  DriverFinder() : module(nullptr) {};
+
   DriverFinder(Yosys::RTLIL::Module *mod);
 
   void build(Yosys::RTLIL::Module *mod);
   void clear();
+
+  size_t size() const;  // Total number of driving cell and wire bits
 
   // The most important functions
 

@@ -23,6 +23,7 @@
 #include "kernel/sigtools.h"
 #include "backends/rtlil/rtlil_backend.h"
 
+#include "driver_tools.h"
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
@@ -58,107 +59,7 @@ void my_log_wire(const RTLIL::Wire *wire)
 }
 
 
-
-// Maps:
-// 1:  A SigSpec to its canonical SigSpec
-// 2: A SigBit to its canonical SigBit
-// 3: A Wire to its canonical SigSpec
-SigMap sigmap;
-
-
-dict<RTLIL::SigBit, CellPortBit> canonical_sigbit_to_driving_cell_table;
-dict<RTLIL::SigBit, WireBit> canonical_sigbit_to_driving_wire_table;
-
-
-void buildSignalMaps(RTLIL::Module *module)
-{
-  sigmap.clear();
-  sigmap.set(module);
-  canonical_sigbit_to_driving_cell_table.clear();
-
-  for (auto cell : module->cells()) {
-    for (auto& conn : cell->connections()) {
-      // conn.first is the signal IdString, conn.second is its SigSpec
-      if (cell->output(conn.first)) {
-        RTLIL::SigSpec canonical_sig = sigmap(conn.second);
-        //log("\nCell %s port %s -> ", cell->name.c_str(),  conn.first.c_str());
-        //my_log_sigspec(conn.second);
-        //log("\ncanonical: ");
-        //my_log_sigspec(canonical_sig);
-        int idx = 0;
-        for (auto& bit : canonical_sig.to_sigbit_vector()) {
-          // sigmap(conn.second) is the canonical SigSpec.
-          // bit is a canonical SigBit
-          //log("  ");
-          //my_log_sigbit(bit);
-          assert(bit.is_wire());  // A cell can't drive a constant!
-          assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);
-          canonical_sigbit_to_driving_cell_table.emplace(bit, CellPortBit{cell, conn.first, idx});
-          ++idx;
-        }
-      }
-    }
-  }
-
-  for (auto wire : module->wires()) {
-    if (wire->port_input) {
-      RTLIL::SigSpec canonical_sig = sigmap(wire);
-      //log("\nport_input wire :\n");
-      //my_log_wire(wire);
-      //log("\ncanonical sigspec:\n");
-      //my_log_sigspec(canonical_sig);
-      int idx = 0;
-      for (auto& bit : canonical_sig.to_sigbit_vector()) {
-        // sigmap(wire) is the canonical SigSpec.
-        // bit is a canonical SigBit
-        assert(canonical_sigbit_to_driving_wire_table.count(bit) == 0);  // Multi-driven?
-        canonical_sigbit_to_driving_wire_table.emplace(bit, WireBit{wire, idx});
-        ++idx;
-      }
-    }
-  }
-
-}
-
-
-
-WireBit *getDrivingWire(const RTLIL::SigBit& sigbit)
-{
-  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
-
-  //log("getDrivingWire:  ");
-  //my_log_sigbit(sigbit);
-  //log("canonical:  ");
-  //my_log_sigbit(canonicalSigbit);
-
-  auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
-  if (iter != canonical_sigbit_to_driving_wire_table.end()) {
-    return &(iter->second);
-  }
-  return nullptr;  // Not driven by a wire
-}
-
-
-
-CellPortBit *getDrivingCell(const RTLIL::SigBit& sigbit)
-{
-  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
-
-  //log("getDrivingCell:  ");
-  //my_log_sigbit(sigbit);
-  //log("canonical:  ");
-  //my_log_sigbit(canonicalSigbit);
-
-  auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
-  if (iter != canonical_sigbit_to_driving_cell_table.end()) {
-    return &(iter->second);
-  }
-  return nullptr;  // Not driven by a cell
-}
-
-
-
-
+static DriverFinder finder;
 
 
 llvm::Value *generateValue(RTLIL::Wire *wire,
@@ -169,27 +70,24 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
   log_debug("RTLIL Wire %s:\n", wire->name.c_str());
   my_log_wire(wire);
 
+  DriverSpec dSpec;
+  finder.buildDriverOf(wire, dSpec);
+
   // Print what drives the bits of this wire
-  RTLIL::SigSpec sigspec = sigmap(wire);
 
   log_debug("Drivers of each bit:\n");
 
   int bitnum = 0;
-  for (auto& bit : sigspec.to_sigbit_vector()) {
-    if (!bit.is_wire()) {
-      log("%2d constant value %d\n", bitnum, bit.data);
+  for (auto& dBit : dSpec.to_driverbit_vector()) {
+    if (dBit.is_data()) {
+      log("%2d constant value %d\n", bitnum, dBit.data);
+    } else if (dBit.is_wire()) {
+        log("%2d wire %s [%d]\n", bitnum, dBit.wire->name.c_str(), dBit.offset);
+    } else if (dBit.is_cell()) {
+        log("%2d cell %s port %s [%d]\n",
+            bitnum, dBit.cell->name.c_str(), dBit.port.c_str(), dBit.offset);
     } else {
-      WireBit *wb = getDrivingWire(bit);
-      if (wb) {
-        log("%2d wire %s [%d]\n", bitnum, wb->wire->name.c_str(), wb->bit);
-      } else {
-        CellPortBit *cpb = getDrivingCell(bit);
-        if (cpb) {
-          log("%2d cell %s port %s [%d]\n", bitnum, cpb->cell->name.c_str(), cpb->port.c_str(), cpb->bit);
-        } else {
-          log("%2d no connection!\n", bitnum);
-        }
-      }
+      log("%2d ?????\n", bitnum);
     }
     bitnum++;
   }
@@ -207,12 +105,10 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
 {
 
 
-  log_debug("Building signal maps\n");
-  buildSignalMaps(unrolledRtlMod);
-  log_debug("Built signal maps\n");
-  log_debug("%ld cells, %ld wires\n",
-             canonical_sigbit_to_driving_cell_table.size(),
-             canonical_sigbit_to_driving_wire_table.size());
+  log_debug("Building DriverFinder\n");
+  finder.build(unrolledRtlMod);
+  log_debug("Built DriverFinder\n");
+  log_debug("%ld objects\n", finder.size());
 
 
   std::shared_ptr<llvm::LLVMContext> TheContext = std::make_unique<llvm::LLVMContext>();
@@ -280,6 +176,8 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   std::ofstream output(llvmFileName);
   output << Str << std::endl;
   output.close();
+
+  finder.clear();  // Only becasue it is static
 
 }
 

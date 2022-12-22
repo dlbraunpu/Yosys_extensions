@@ -1,8 +1,22 @@
-#include "DriverSpec.h"
+#include "driver_tools.h"
 #include "kernel/rtlil.h"
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
+
+DriverBit::DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port) :
+        wire(nullptr), cell(cell), offset(0)
+{
+        log_assert(cell != nullptr && !port.empty() &&
+                   cell->hasPort(port) && cell->getPort(port).size() == 1);
+}
+
+
+DriverBit::DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset) :
+        wire(nullptr), cell(cell), offset(offset)
+{
+        log_assert(cell != nullptr && !port.empty() && cell->hasPort(port));
+}
 
 
 // If neither thing has an object, this return false
@@ -1551,6 +1565,7 @@ DriverFinder::getDrivingCell(const RTLIL::SigBit& sigbit)
 void
 DriverFinder::buildDriverOf(const RTLIL::Cell *cell, const RTLIL::IdString& port, DriverSpec& driver)
 {
+  log_assert(cell->module == module);
   RTLIL::SigSpec sigspec = cell->getPort(port);
   buildDriverOf(sigspec, driver);
 }
@@ -1562,6 +1577,7 @@ DriverFinder::buildDriverOf(const RTLIL::Cell *cell, const RTLIL::IdString& port
 void
 DriverFinder::buildDriverOf(RTLIL::Wire *wire, DriverSpec& driver)
 {
+  log_assert(wire->module == module);
   RTLIL::SigSpec sigspec = sigmap(wire);
   buildDriverOf(sigspec, driver);
 }
@@ -1600,3 +1616,14 @@ DriverFinder::buildDriverOf(const RTLIL::SigSpec& sigspec, DriverSpec& driver)
   }
 
 }
+
+
+size_t DriverFinder::size() const
+{
+  return canonical_sigbit_to_driving_cell_table.size() +
+         canonical_sigbit_to_driving_wire_table.size();
+}
+
+
+
+
