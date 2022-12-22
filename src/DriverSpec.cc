@@ -30,6 +30,7 @@ DriverChunk::DriverChunk(RTLIL::Wire *wire)
 
 DriverChunk::DriverChunk(RTLIL::Wire *wire, int offset, int width)
 {
+        // Doug:  check that offset/width are not beyond wire width?
 	log_assert(wire != nullptr);
 	this->wire = wire;
         this->cell = NULL;
@@ -45,12 +46,13 @@ DriverChunk::DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port)
 	this->wire = NULL;
         this->cell = cell;
         this->port = port;
-	this->width = wire->width;
+	this->width = cell->getPort(port).size();
 	this->offset = 0;
 }
 
 DriverChunk::DriverChunk(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset, int width)
 {
+        // Doug:  check that offset/width are not beyond port width?
 	log_assert(cell != nullptr);
 	log_assert(!port.empty());
         log_assert(cell->hasPort(port));
@@ -127,13 +129,22 @@ DriverChunk DriverChunk::extract(int offset, int length) const
 
 bool DriverChunk::operator <(const DriverChunk &other) const
 {
-  // Doug TODO
 	if (wire && other.wire)
 		if (wire->name != other.wire->name)
 			return wire->name < other.wire->name;
 
 	if (wire != other.wire)
 		return wire < other.wire;
+
+	if (cell && other.cell)
+		if (cell->name != other.cell->name)
+			return cell->name < other.cell->name;  
+
+	if (cell != other.cell)
+		return cell < other.cell;
+
+        if (port != other.port) (
+                return port < other.port;  
 
 	if (offset != other.offset)
 		return offset < other.offset;
@@ -156,6 +167,20 @@ bool DriverChunk::operator !=(const DriverChunk &other) const
 		return false;
 	return true;
 }
+
+
+// Width of wire or port (possibly different than our width)
+int DriverChunk::object_width() const
+{
+  log_assert(is_object());
+  if (is_wire()) {
+    return wire->width
+  } else {
+    return cell->getPort(port).size();
+  }
+}
+
+
 
 DriverSpec::DriverSpec()
 {
@@ -253,9 +278,9 @@ DriverSpec::DriverSpec(RTLIL::Wire *wire, int offset, int width)
 DriverSpec::DriverSpec(RTLIL::Cell *cell, const RTLIL::IdString& port)
 {
 	cover("driverspec.init.wire");
+        log_assert(cell && cell->hasPort(port));
 
-        // Doug TODO
-	if (wire->width != 0) {
+	if (cell->getPort(port).size() != 0) {
 		chunks_.emplace_back(cell, port);
 		width_ = chunks_.back().width;
 	} else {
@@ -268,6 +293,7 @@ DriverSpec::DriverSpec(RTLIL::Cell *cell, const RTLIL::IdString& port)
 DriverSpec::DriverSpec(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset, int width)
 {
 	cover("driverspec.init.wire_part");
+        log_assert(cell && cell->hasPort(port));
 
 	if (width != 0) {
 		chunks_.emplace_back(cell, port, offset, width);
@@ -963,7 +989,7 @@ void DriverSpec::check(Module *mod) const
 					log_assert(chunk.offset != chunks_[i-1].offset + chunks_[i-1].width);
 				log_assert(chunk.offset >= 0);
 				log_assert(chunk.width >= 0);
-				log_assert(chunk.offset + chunk.width <= chunk.wire->width);
+				log_assert(chunk.offset + chunk.width <= chunk.object_width());
 				log_assert(chunk.data.size() == 0);
 				if (mod != nullptr)
 					log_assert(chunk.wire->module == mod);
@@ -974,7 +1000,7 @@ void DriverSpec::check(Module *mod) const
 					log_assert(chunk.offset != chunks_[i-1].offset + chunks_[i-1].width);
 				log_assert(chunk.offset >= 0);
 				log_assert(chunk.width >= 0);
-				log_assert(chunk.offset + chunk.width <= chunk.wire->width); // Doug TODO port_width
+				log_assert(chunk.offset + chunk.width <= chunk.object_width());
 				log_assert(chunk.data.size() == 0);
 				if (mod != nullptr)
 					log_assert(chunk.cell->module == mod);
@@ -1086,7 +1112,7 @@ bool DriverSpec::is_wire() const
 	cover("driverspec.is_wire");
 
 	pack();
-	return GetSize(chunks_) == 1 && chunks_[0].wire && chunks_[0].wire->width == width_;
+	return GetSize(chunks_) == 1 && chunks_[0].wire && chunks_[0].object_width() == width_;
 }
 
 // The driverSpec has exactly one chunk, which is a cell/port of the full width.
@@ -1095,7 +1121,7 @@ bool DriverSpec::is_cell() const
 	cover("driverspec.is_cell");
 
 	pack();
-	return GetSize(chunks_) == 1 && chunks_[0].cell && chunks_[0].wire->width == width_; // Doug TODO port_width
+	return GetSize(chunks_) == 1 && chunks_[0].cell && chunks_[0].object_width() == width_; 
 }
 
 bool DriverSpec::is_chunk() const

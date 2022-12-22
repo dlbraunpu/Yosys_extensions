@@ -39,6 +39,8 @@ struct DriverChunk
 	inline bool is_object() const { return cell != NULL || wire != NULL; }
 	inline bool is_data() const { return !is_object(); }
 
+        int object_width() const;  // Width of wire or port (possibly different than our width)
+
 	bool operator <(const DriverChunk &other) const;
 	bool operator ==(const DriverChunk &other) const;
 	bool operator !=(const DriverChunk &other) const;
