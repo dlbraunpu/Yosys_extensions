@@ -1008,7 +1008,8 @@ void DriverSpec::check(Module *mod) const
 		for (size_t i = 0; i < chunks_.size(); i++) {
 			const DriverChunk &chunk = chunks_[i];
 			log_assert(chunk.width != 0);
-			if (chunk.wire != nullptr) {
+			if (chunk.is_wire()) {
+                                // See if this chunk ought to be a continuation of the previous chunk
 				if (i > 0 && chunks_[i-1].wire == chunk.wire)
 					log_assert(chunk.offset != chunks_[i-1].offset + chunks_[i-1].width);
 				log_assert(chunk.offset >= 0);
@@ -1017,9 +1018,10 @@ void DriverSpec::check(Module *mod) const
 				log_assert(chunk.data.size() == 0);
 				if (mod != nullptr)
 					log_assert(chunk.wire->module == mod);
-                        } else if (chunk.cell != nullptr) {
+                        } else if (chunk.is_cell()) {
                                 log_assert(!chunk.port.empty());
                                 log_assert(chunk.cell->hasPort(chunk.port));
+                                // See if this chunk ought to be a continuation of the previous chunk
 				if (i > 0 && chunks_[i-1].cell == chunk.cell && chunks_[i-1].port == chunk.port)
 					log_assert(chunk.offset != chunks_[i-1].offset + chunks_[i-1].width);
 				log_assert(chunk.offset >= 0);
@@ -1029,8 +1031,10 @@ void DriverSpec::check(Module *mod) const
 				if (mod != nullptr)
 					log_assert(chunk.cell->module == mod);
 			} else {
+				log_assert(chunk.is_data());
+                                // Two data chunks in a row, which should have been combined
 				if (i > 0)
-					log_assert(chunks_[i-1].is_object());
+					log_assert(!chunks_[i-1].is_data());
 				log_assert(chunk.offset == 0);
 				log_assert(chunk.data.size() == (size_t)chunk.width);
 			}
