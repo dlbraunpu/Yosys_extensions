@@ -75,22 +75,8 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
 
   // Print what drives the bits of this wire
 
-  log("Drivers of each bit:\n");
-
-  int bitnum = 0;
-  for (auto& dBit : dSpec.to_driverbit_vector()) {
-    if (dBit.is_data()) {
-      log("%2d constant value %d\n", bitnum, dBit.data);
-    } else if (dBit.is_wire()) {
-        log("%2d wire %s [%d]\n", bitnum, dBit.wire->name.c_str(), dBit.offset);
-    } else if (dBit.is_cell()) {
-        log("%2d cell %s port %s [%d]\n",
-            bitnum, dBit.cell->name.c_str(), dBit.port.c_str(), dBit.offset);
-    } else {
-      log("%2d ?????\n", bitnum);
-    }
-    bitnum++;
-  }
+  log("Driver spec:\n");
+  log_driverspec(dSpec);
 
 
   // TMP: Just return an arbitrary constant

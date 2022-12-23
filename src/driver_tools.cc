@@ -1,5 +1,7 @@
 #include "driver_tools.h"
 #include "kernel/rtlil.h"
+#include "backends/rtlil/rtlil_backend.h"
+
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
@@ -1646,3 +1648,54 @@ size_t DriverFinder::size() const
 
 
 
+void dump_driverchunk(std::ostream &f, const DriverChunk &chunk, bool autoint)
+{
+        if (chunk.wire != nullptr) {
+		if (chunk.width == chunk.object_width() && chunk.offset == 0)
+			f << stringf("%s", chunk.wire->name.c_str());
+		else if (chunk.width == 1)
+			f << stringf("%s [%d]", chunk.wire->name.c_str(), chunk.offset);
+		else
+			f << stringf("%s [%d:%d]", chunk.wire->name.c_str(), chunk.offset+chunk.width-1, chunk.offset);
+        } else if (chunk.cell != nullptr) {
+		if (chunk.width == chunk.object_width() && chunk.offset == 0)
+			f << stringf("%s %s", chunk.cell->name.c_str(), chunk.port.c_str());
+		else if (chunk.width == 1)
+			f << stringf("%s %s [%d]", chunk.cell->name.c_str(), chunk.port.c_str(), chunk.offset);
+		else
+			f << stringf("%s %s [%d:%d]", chunk.cell->name.c_str(), chunk.port.c_str(), chunk.offset+chunk.width-1, chunk.offset);
+	} else {
+          RTLIL_BACKEND::dump_const(f, chunk.data, chunk.width, chunk.offset, autoint);
+        }
+}
+
+void dump_driverspec(std::ostream &f, const DriverSpec &driver, bool autoint)
+{
+	if (driver.is_chunk()) {
+		dump_driverchunk(f, driver.as_chunk(), autoint);
+	} else {
+		f << stringf("{ ");
+		for (auto it = driver.chunks().rbegin(); it != driver.chunks().rend(); ++it) {
+			dump_driverchunk(f, *it, false);
+			f << stringf(" ");
+		}
+		f << stringf("}");
+	}
+}
+
+
+void log_driverchunk(const DriverChunk &chunk, bool autoint)
+{
+  std::stringstream buf;
+  dump_driverchunk(buf, chunk, autoint);
+  log("driver chunk: %s\n", buf.str().c_str());
+}
+
+
+
+void log_driverspec(const DriverSpec &driver, bool autoint)
+{
+  std::stringstream buf;
+  dump_driverspec(buf, driver, autoint);
+  log("driver spec: %s\n", buf.str().c_str());
+}
