@@ -67,7 +67,7 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
                            std::shared_ptr<llvm::IRBuilder<>> b)
 {
 
-  log_debug("RTLIL Wire %s:\n", wire->name.c_str());
+  log("RTLIL Wire %s:\n", wire->name.c_str());
   my_log_wire(wire);
 
   DriverSpec dSpec;
@@ -75,7 +75,7 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
 
   // Print what drives the bits of this wire
 
-  log_debug("Drivers of each bit:\n");
+  log("Drivers of each bit:\n");
 
   int bitnum = 0;
   for (auto& dBit : dSpec.to_driverbit_vector()) {
@@ -105,10 +105,10 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
 {
 
 
-  log_debug("Building DriverFinder\n");
+  log("Building DriverFinder\n");
   finder.build(unrolledRtlMod);
-  log_debug("Built DriverFinder\n");
-  log_debug("%ld objects\n", finder.size());
+  log("Built DriverFinder\n");
+  log("%ld objects\n", finder.size());
 
 
   std::shared_ptr<llvm::LLVMContext> TheContext = std::make_unique<llvm::LLVMContext>();

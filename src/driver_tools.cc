@@ -5,7 +5,7 @@ USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 
 DriverBit::DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port) :
-        wire(nullptr), cell(cell), offset(0)
+        wire(nullptr), cell(cell), port(port), offset(0)
 {
         log_assert(cell != nullptr && !port.empty() &&
                    cell->hasPort(port) && cell->getPort(port).size() == 1);
@@ -13,9 +13,22 @@ DriverBit::DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port) :
 
 
 DriverBit::DriverBit(RTLIL::Cell *cell, const RTLIL::IdString& port, int offset) :
-        wire(nullptr), cell(cell), offset(offset)
+        wire(nullptr), cell(cell), port(port), offset(offset)
 {
         log_assert(cell != nullptr && !port.empty() && cell->hasPort(port));
+}
+
+DriverBit::DriverBit(const DriverChunk &chunk) :
+        wire(chunk.wire), cell(chunk.cell), port(chunk.port)
+{
+        log_assert(chunk.width == 1);
+        if (chunk.is_object()) offset = chunk.offset; else data = chunk.data[0];
+}
+
+DriverBit::DriverBit(const DriverChunk &chunk, int index) :
+        wire(chunk.wire), cell(chunk.cell), port(chunk.port)
+{
+        if (chunk.is_object()) offset = chunk.offset + index; else data = chunk.data[index];
 }
 
 
@@ -118,9 +131,10 @@ DriverChunk::DriverChunk(RTLIL::State bit, int width)
 DriverChunk::DriverChunk(const DriverBit &bit)
 {
 	wire = bit.wire;
-        cell = nullptr;
+        cell = bit.cell;
+        port = bit.port;
 	offset = 0;
-	if (wire == nullptr)
+	if (is_data())
 		data = RTLIL::Const(bit.data).bits;
 	else
 		offset = bit.offset;
@@ -936,9 +950,9 @@ void DriverSpec::append(const DriverBit &bit)
 	{
 		cover("driverspec.append_bit.packed");
 
-		if (chunks_.size() == 0)
+		if (chunks_.size() == 0) {
 			chunks_.push_back(bit);
-		else
+                } else {
 			if (bit.is_data()) {
 				if (chunks_.back().is_data()) {
 					chunks_.back().data.push_back(bit.data);
@@ -953,6 +967,7 @@ void DriverSpec::append(const DriverBit &bit)
 					chunks_.push_back(bit);
                                 }
                         }
+                }
 	}
 	else
 	{

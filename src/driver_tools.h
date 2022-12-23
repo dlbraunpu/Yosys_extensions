@@ -296,10 +296,6 @@ inline DriverBit::DriverBit(bool bit) : wire(nullptr), cell(nullptr), data(bit ?
 inline DriverBit::DriverBit(Yosys::RTLIL::Wire *wire) : wire(wire), cell(nullptr), offset(0) { log_assert(wire && wire->width == 1); }
 inline DriverBit::DriverBit(Yosys::RTLIL::Wire *wire, int offset) : wire(wire), cell(nullptr), offset(offset) { log_assert(wire != nullptr); }
 
-
-inline DriverBit::DriverBit(const DriverChunk &chunk) : wire(chunk.wire) { log_assert(chunk.width == 1); if (wire) offset = chunk.offset; else data = chunk.data[0]; }
-inline DriverBit::DriverBit(const DriverChunk &chunk, int index) : wire(chunk.wire) { if (wire) offset = chunk.offset + index; else data = chunk.data[index]; }
-
 inline bool DriverBit::operator<(const DriverBit &other) const {
 	if (wire == other.wire)
 		return wire ? (offset < other.offset) : (data < other.data);
