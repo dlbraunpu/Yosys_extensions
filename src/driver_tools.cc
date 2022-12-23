@@ -1651,6 +1651,9 @@ size_t DriverFinder::size() const
 void dump_driverchunk(std::ostream &f, const DriverChunk &chunk, bool autoint)
 {
         if (chunk.wire != nullptr) {
+                if (chunk.wire->port_input) f << "input port ";
+                if (chunk.wire->port_output) f << "output port ";
+                f << "wire ";
 		if (chunk.width == chunk.object_width() && chunk.offset == 0)
 			f << stringf("%s", chunk.wire->name.c_str());
 		else if (chunk.width == 1)
@@ -1658,6 +1661,7 @@ void dump_driverchunk(std::ostream &f, const DriverChunk &chunk, bool autoint)
 		else
 			f << stringf("%s [%d:%d]", chunk.wire->name.c_str(), chunk.offset+chunk.width-1, chunk.offset);
         } else if (chunk.cell != nullptr) {
+                f << "cell port ";
 		if (chunk.width == chunk.object_width() && chunk.offset == 0)
 			f << stringf("%s %s", chunk.cell->name.c_str(), chunk.port.c_str());
 		else if (chunk.width == 1)
@@ -1665,8 +1669,10 @@ void dump_driverchunk(std::ostream &f, const DriverChunk &chunk, bool autoint)
 		else
 			f << stringf("%s %s [%d:%d]", chunk.cell->name.c_str(), chunk.port.c_str(), chunk.offset+chunk.width-1, chunk.offset);
 	} else {
-          RTLIL_BACKEND::dump_const(f, chunk.data, chunk.width, chunk.offset, autoint);
+                f << "const ";
+                RTLIL_BACKEND::dump_const(f, chunk.data, chunk.width, chunk.offset, autoint);
         }
+        f << stringf(" (width %d)", chunk.width);
 }
 
 void dump_driverspec(std::ostream &f, const DriverSpec &driver, bool autoint)

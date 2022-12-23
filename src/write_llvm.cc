@@ -75,8 +75,8 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
 
   // Print what drives the bits of this wire
 
-  log("Driver spec:\n");
   log_driverspec(dSpec);
+  log("\n");
 
 
   // TMP: Just return an arbitrary constant
@@ -86,6 +86,23 @@ llvm::Value *generateValue(RTLIL::Wire *wire,
 }
 
 
+
+llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
+                           std::shared_ptr<llvm::LLVMContext> c,
+                           std::shared_ptr<llvm::IRBuilder<>> b)
+{
+
+  log("RTLIL cell port %s %s  width %d:\n", cell->name.c_str(), port.c_str(), cell->getPort(port).size());
+
+  DriverSpec dSpec;
+  finder.buildDriverOf(cell, port, dSpec);
+
+  // Print what drives the bits of this cell port
+
+  log_driverspec(dSpec);
+
+  return nullptr;
+}
 
 void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::string destName, std::string llvmFileName)
 {
@@ -147,6 +164,18 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
 
   // All the real work happens here 
   llvm::Value *destValue = generateValue(destWire, TheContext, Builder);
+
+  // Testing code:  Print sources of every cell input
+  for (auto cell : unrolledRtlMod->cells()) {
+    for (auto& conn : cell->connections()) {
+      // conn.first is the signal IdString, conn.second is its SigSpec
+      if (cell->input(conn.first)) {
+        generateValue(cell, conn.first, TheContext, Builder);
+        log("\n");
+      }
+    }
+  }
+
 
   llvm::Instruction* retInst = Builder->CreateRet(destValue);
 
