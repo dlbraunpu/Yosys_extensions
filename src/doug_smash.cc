@@ -26,6 +26,10 @@
 #include "func_extract/src/global_data_struct.h"
 #include "func_extract/src/parse_fill.h"
 #include "func_extract/src/read_instr.h"
+#include "func_extract/src/get_all_update.h"
+#include "func_extract/src/helper.h"
+
+#include "llvm/ADT/APInt.h"
 
 #include "write_llvm.h"
 
@@ -672,6 +676,54 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
 }
 
 
+// Translate the given string (something as complicated as
+// "7'h4+5'h7+5'h13+3'hx+5'h12+5'h8+2'b11", as read from instr.txt) into
+// a SigSpec.  The given SigSpec should be freshly-created; it will get filled in.
+// This function makes use of Yosys, LLVM, and func_extract code and data structures...
+
+void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
+{
+  llvm::APInt value = funcExtract::convert_to_single_apint(valStr, false /*xmask*/);
+  llvm::APInt xmask = funcExtract::convert_to_single_apint(valStr, true /*xmask*/);
+
+  unsigned width = value.getBitWidth();
+  log("    width %d\n", width);
+  
+  for (unsigned n = 0; n < width; ++n) {
+    bool bitval = value[n];
+    bool not_x = xmask[n];
+
+    RTLIL::SigBit b(not_x ? (bitval ? RTLIL::State::S1 : RTLIL::State::S0) : RTLIL::State::Sx);
+    spec.append(b);  // Correct bit ordering?
+  }
+}
+
+
+
+void
+applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encoding, int cycles)
+{
+  for (auto pair : encoding) {
+    const std::string& inputName = pair.first;
+    const std::vector<std::string>& values = pair.second;
+    log("Input variable: %s\n", inputName.c_str());
+
+    // Map the instr.txt cycle numbering to the unrolled RTL cycle numbering.
+    int cycle = cycles;
+    for (const std::string& valStr : values) {
+      log("  cycle %d  value %s\n", cycle, valStr.c_str());
+
+      RTLIL::SigSpec ss;
+      getSigSpec(valStr, ss);
+      log("    RTLIL value: %s\n", log_signal(ss));
+
+
+      cycle--;
+    }
+  }
+}
+
+
 
 struct DougSmashCmd : public Pass {
 
@@ -711,7 +763,7 @@ struct DougSmashCmd : public Pass {
     }
 
     std::string instrName = args[1];
-    std::string asvName = args[2];
+    std::string targetName = args[2];
 
 
     size_t argidx;
@@ -751,28 +803,27 @@ struct DougSmashCmd : public Pass {
     }
 
     // Find the data for the instruction and ASV of interest
-    funcExtract::InstrInfo_t* instrInfo;
-    for (auto ii : funcExtract::g_instrInfo) {
+    funcExtract::InstrInfo_t* instrInfo = nullptr;
+    for (funcExtract::InstrInfo_t& ii : funcExtract::g_instrInfo) {
       if (ii.name == instrName) {
         instrInfo = &ii;
         break;
       }
     }
     if (!instrInfo) {
-      log_cmd_error("No such instruction: %s\n", instrName.c_str());
+      log_cmd_error("No such instruction %s\n", instrName.c_str());
     }
 
-    int num_cycles = -1;
-    for(auto pair: instrInfo->writeASV) {
-      if (pair.second == asvName) {
-        num_cycles = pair.first;
-        break;
-      }
+    if (!funcExtract::g_allowedTgt.count(targetName)) {
+      log_cmd_error("No such ASV %s for instruction %s\n", targetName.c_str(), instrName.c_str());
     }
 
-    if (num_cycles < 0) {
-      log_cmd_error("No such ASV %s for instruction: %s\n", asvName.c_str(), instrName.c_str());
+    std::vector<uint32_t> delayBounds = funcExtract::get_delay_bounds(targetName, *instrInfo);
+    if (delayBounds.size() != 1) {
+      log_cmd_error("Delay not defined for ASV %s for instruction %s\n", targetName.c_str(), instrName.c_str());
     }
+
+    int num_cycles = delayBounds[0];
 
 
     RTLIL::IdString destmodname = RTLIL::escape_id("unrolled");
@@ -805,9 +856,11 @@ struct DougSmashCmd : public Pass {
     log("Unrolling module `%s' into `%s' for num_cycles %d.\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
     unroll_module(srcmod, destmod, num_cycles);
 
+    applyInstrEncoding(destmod, instrInfo->instrEncoding, num_cycles);
+
     log_header(design, "Writing LLVM data...\n");
-    //asvName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
-    write_llvm_ir(destmod, "xxx"/*module name*/, asvName, "xxx.llvm" /*output file name*/);
+    //targetName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
+    write_llvm_ir(destmod, "xxx"/*module name*/, targetName, "xxx.llvm" /*output file name*/);
   }
 } DougSmashCmd;
 

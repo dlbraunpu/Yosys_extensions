@@ -124,7 +124,7 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
 
   // Get the yosys RTLIL object representing the destination ASV.
   // TODO: Map the original Verilog register name to the actual wire name.
-  std::string wireName = destName + "_#1";
+  std::string wireName = "\\" + destName + "_#1";
   RTLIL::Wire *destWire = unrolledRtlMod->wire(wireName);
   if (!destWire) {
     log_error("Can't find wire for destination ASV %s\n", destName.c_str());
