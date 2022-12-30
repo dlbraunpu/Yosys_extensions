@@ -1,8 +1,8 @@
+#ifndef DRIVER_TOOLS_H
+#define DRIVER_TOOLS_H
+
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
-
-#ifndef DRIVER_SPEC_H
-#define DRIVER_SPEC_H
 
 // An enhanced version of Yosys::RTLIL::SigSpec.
 // It describes collections of constants, cell port bits, and wire bits

@@ -28,6 +28,8 @@ llvm_map_components_to_libnames(llvm_libs support core irreader)
 
 # Stuff required by our existing func_extract code
 set(AUTO_GEN_ILA_DIR /home/dlbraun/autoGenILA/src)
+# Include .h files like this: #include live_analysis/src/global_data.h
+include_directories(${AUTO_GEN_ILA_DIR})
 link_directories(${AUTO_GEN_ILA_DIR}/live_analysis/build)
 link_directories(${AUTO_GEN_ILA_DIR}/func_extract/build)
 

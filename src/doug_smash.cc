@@ -21,6 +21,12 @@
  *
  */
 
+
+#include "live_analysis/src/global_data.h"
+#include "func_extract/src/global_data_struct.h"
+#include "func_extract/src/parse_fill.h"
+#include "func_extract/src/read_instr.h"
+
 #include "write_llvm.h"
 
 #include "kernel/register.h"
@@ -285,10 +291,12 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 }
 
 
-void smash_module(RTLIL::Design *design, RTLIL::Module *dest, 
-                  RTLIL::Module *src, SigMap &sigmap, int cycle,
-                  RegDict& registers)
+void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
+                  int cycle, RegDict& registers)
 {
+  RTLIL::Design *design = dest->design;
+  log_assert(src->design == design);
+
   // Copy the contents of the module src into module dest.  
   log("Smashing for cycle %d\n", cycle);
 
@@ -569,96 +577,8 @@ void join_sigs(RTLIL::Module *destmod, RTLIL::SigSpec& from_sig, RTLIL::SigSpec&
 
 
 
-struct DougSmashCmd : public Pass {
-
-  DougSmashCmd() : Pass("doug_smash", "Smash one module into another, with objhect renaming") { }
-
-  void help() override
-  {
-    //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
-    log("\n");
-    log("    doug_smash <destmod> <srcmod> <cycle count> [options]\n");
-    log("\n");
-    log("Do whatever Doug is working on\n");
-    log("\n");
-  }
-
-  void execute(std::vector<std::string> args, RTLIL::Design *design) override
-  {
-    log_header(design, "Executing Doug's stuff.\n");
-
-
-    int num_cycles = 1;
-
-    verbose = false;
-    noattr = false;
-    auto_prefix = "";
-
-
-    auto_name_map.clear();
-
-
-    if (args.size() < 4) {
-      log_error("Not enough arguments!");
-      return;
-    }
-
-    RTLIL::IdString destmodname = RTLIL::escape_id(args[1]);
-    RTLIL::Module *destmod = design->module(destmodname);
-    if (destmod) {
-      log_cmd_error("Destination module %s already exists\n", id2cstr(destmodname));
-    }
-
-    RTLIL::IdString srcmodname = RTLIL::escape_id(args[2]);
-    RTLIL::Module *srcmod = design->module(srcmodname);
-    if (!srcmod) {
-      log_cmd_error("No such source module: %s\n", id2cstr(srcmodname));
-    }
-
-    num_cycles = atoi(args[3].c_str());
-    if (num_cycles < 1) {
-      log_cmd_error("Bad num_cycles value %d\n", num_cycles);
-    }
-
-    size_t argidx;
-    for (argidx = 4; argidx < args.size(); argidx++) {
-      std::string arg = args[argidx];
-      if (arg == "-noattr") {
-        noattr = true;
-        continue;
-      }
-      if (arg == "-v") {
-        verbose = true;
-        continue;
-      }
-      break;
-    }
-    extra_args(args, argidx, design);
-
-
-#if 0
-    log_push();
-    Pass::call(design, "bmuxmap");
-    Pass::call(design, "demuxmap");
-    Pass::call(design, "clean_zerowidth");
-    log_pop();
-#endif
-
-    design->sort();
-
-    if (!srcmod->processes.empty()) {
-      log_warning("Module %s contains unmapped RTLIL processes. RTLIL processes\n"
-                  "can't always be mapped directly to Verilog always blocks. Unintended\n"
-                  "changes in simulation behavior are possible! Use \"proc\" to convert\n"
-                  "processes to logic networks and registers.\n", id2cstr(srcmodname));
-    }
-
-
-    // Create the new module
-    destmod = design->addModule(RTLIL::escape_id(destmodname.str()));
-
-    log("Smashing module `%s' into `%s' for num_cycles %d.\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
-
+void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles)
+{
 
     // Copy the source module's attributes to it.
     for (auto &attr : srcmod->attributes) {
@@ -679,7 +599,7 @@ struct DougSmashCmd : public Pass {
 
       RegDict cur_cycle_regs;
 
-      smash_module(design, destmod, srcmod, sigmap, cycle, cur_cycle_regs);
+      smash_module(destmod, srcmod, sigmap, cycle, cur_cycle_regs);
 
       SigSpecDict& prev_cycle_q_fanouts = (cycle&0x01) ? q_fanouts0 : q_fanouts1;
 
@@ -749,9 +669,144 @@ struct DougSmashCmd : public Pass {
     destmod->fixup_ports();
 
     auto_name_map.clear();
+}
+
+
+
+struct DougSmashCmd : public Pass {
+
+  DougSmashCmd() : Pass("doug_smash", "Smash one module into another, with objhect renaming") { }
+
+  void help() override
+  {
+    //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
+    log("\n");
+    log("    doug_smash instr dest_asv [options]\n");
+    log("\n");
+    log("Do whatever Doug is working on\n");
+    log("\n");
+  }
+
+  void execute(std::vector<std::string> args, RTLIL::Design *design) override
+  {
+    log_header(design, "Executing Doug's stuff.\n");
+
+    taintGen::g_path = ".";
+    taintGen::g_verb = false;
+
+
+
+
+    verbose = false;
+    noattr = false;
+    auto_prefix = "";
+
+
+    auto_name_map.clear();
+
+
+    if (args.size() < 4) {
+      log_error("Not enough arguments!\n");
+      return;
+    }
+
+    std::string instrName = args[1];
+    std::string asvName = args[2];
+
+
+    size_t argidx;
+    for (argidx = 3; argidx < args.size(); argidx++) {
+      std::string arg = args[argidx];
+      if (arg == "-noattr") {
+        noattr = true;
+        continue;
+      }
+      if (arg == "-v") {
+        verbose = true;
+        continue;
+      }
+      if (arg == "-path") {
+        ++argidx;
+        taintGen::g_path = args[argidx];
+        continue;
+      }
+      break;
+    }
+    extra_args(args, argidx, design);
+
+    funcExtract::read_config(taintGen::g_path+"/config.txt");
+
+    if (verbose) taintGen::g_verb = true;  // Override setting from config.txt
+
+    // read instr.txt, result in g_instrInfo
+    // instruction encodings, write/read ASV, NOP
+    funcExtract::read_in_instructions(taintGen::g_path+"/instr.txt");
+
+    funcExtract::read_allowed_targets(taintGen::g_path+"/allowed_target.txt");
+
+    RTLIL::IdString srcmodname = RTLIL::escape_id(taintGen::g_topModule);
+    RTLIL::Module *srcmod = design->module(srcmodname);
+    if (!srcmod) {
+      log_cmd_error("No such source module: %s\n", id2cstr(srcmodname));
+    }
+
+    // Find the data for the instruction and ASV of interest
+    funcExtract::InstrInfo_t* instrInfo;
+    for (auto ii : funcExtract::g_instrInfo) {
+      if (ii.name == instrName) {
+        instrInfo = &ii;
+        break;
+      }
+    }
+    if (!instrInfo) {
+      log_cmd_error("No such instruction: %s\n", instrName.c_str());
+    }
+
+    int num_cycles = -1;
+    for(auto pair: instrInfo->writeASV) {
+      if (pair.second == asvName) {
+        num_cycles = pair.first;
+        break;
+      }
+    }
+
+    if (num_cycles < 0) {
+      log_cmd_error("No such ASV %s for instruction: %s\n", asvName.c_str(), instrName.c_str());
+    }
+
+
+    RTLIL::IdString destmodname = RTLIL::escape_id("unrolled");
+    RTLIL::Module *destmod = design->module(destmodname);
+    if (destmod) {
+      log_cmd_error("Destination module %s already exists\n", id2cstr(destmodname));
+    }
+
+
+#if 0
+    log_push();
+    Pass::call(design, "bmuxmap");
+    Pass::call(design, "demuxmap");
+    Pass::call(design, "clean_zerowidth");
+    log_pop();
+#endif
+
+    design->sort();
+
+    if (!srcmod->processes.empty()) {
+      log_warning("Module %s contains unmapped RTLIL processes. RTLIL processes\n"
+                  "can't always be mapped directly to Verilog always blocks. Unintended\n"
+                  "changes in simulation behavior are possible! Use \"proc\" to convert\n"
+                  "processes to logic networks and registers.\n", id2cstr(srcmodname));
+    }
+
+    // Create the new module
+    destmod = design->addModule(RTLIL::escape_id(destmodname.str()));
+
+    log("Unrolling module `%s' into `%s' for num_cycles %d.\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
+    unroll_module(srcmod, destmod, num_cycles);
 
     log_header(design, "Writing LLVM data...\n");
-    std::string asvName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
+    //asvName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
     write_llvm_ir(destmod, "xxx"/*module name*/, asvName, "xxx.llvm" /*output file name*/);
   }
 } DougSmashCmd;
