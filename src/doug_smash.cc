@@ -700,22 +700,114 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
 
 
 
+// Truncate or zero-extend the SigSpec as necessary to make it the given width.
+// An all-x value will be x-extended.
+void
+adjustSigSpecWidth(RTLIL::SigSpec& ss, int newWidth)
+{
+  int oldWidth = ss.size();
+  if (oldWidth > newWidth) {
+    ss.remove(newWidth, oldWidth - newWidth);
+  } else if (oldWidth < newWidth) {
+    RTLIL::State padding = ss.is_fully_undef() ? RTLIL::State::Sx : RTLIL::State::S0;
+    while (ss.size() < newWidth)
+      ss.append(padding);
+  }
+}
+
+
+// If necessary this will create a new port wire and a connection that applies any
+// 0/1 values to the original port wire.  If ss is all x, nothing has to be done.
+RTLIL::Wire *
+applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss)
+{
+  assert(origPort->port_input);
+
+  if (ss.is_fully_undef()) {
+    return origPort;  // no change needed
+  }
+
+  RTLIL::Module *mod = origPort->module;
+
+  RTLIL::IdString origName = origPort->name;
+
+  std::string newStr = "$" + origPort->name.substr(1) + "orig";
+  RTLIL::IdString newName = mod->uniquify(newStr);
+  mod->rename(origPort, newName);
+
+  RTLIL::Wire *newPort = mod->addWire(origName, origPort->width);
+
+  // The new port takes over the old port's status
+  newPort->port_input = origPort->port_input;
+  origPort->port_input = false;
+  newPort->port_output = origPort->port_output;
+  origPort->port_output = false;
+  mod->fixup_ports();  // TODO: Can this be done less often?
+  // TODO: Copy or move orig port attribtes to new wire.
+
+  if (ss.is_fully_const()) {
+    // Simply connect the orignal port wire to the constant SigSpec.
+    // The new port wire is a dead-end.
+    mod->connect(RTLIL::SigSpec(origPort), ss);
+  } else {
+    // a partially-constant SigSpec: connect the old port to either the new port or the constant
+    // on a bit-by-bit basis.
+
+    RTLIL::SigSpec ss2;
+    for (int n=0; n < origPort->width; ++n) {
+      assert(!ss.is_wire());
+      if (ss[n].data == RTLIL::State::S0 ||
+          ss[n].data == RTLIL::State::S1) {
+        ss2.append(ss[n]);
+      } else {
+        ss2.append(RTLIL::SigBit(newPort, n));
+      }
+    }
+    mod->connect(RTLIL::SigSpec(origPort), ss2);
+  }
+
+  return newPort;
+}
+
+
 void
 applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encoding, int cycles)
 {
+  // Go through the encoding data loaded from instr.txt
   for (auto pair : encoding) {
     const std::string& inputName = pair.first;
     const std::vector<std::string>& values = pair.second;
-    log("Input variable: %s\n", inputName.c_str());
+    log_debug("Input variable: %s\n", inputName.c_str());
 
     // Map the instr.txt cycle numbering to the unrolled RTL cycle numbering.
     int cycle = cycles;
     for (const std::string& valStr : values) {
-      log("  cycle %d  value %s\n", cycle, valStr.c_str());
 
       RTLIL::SigSpec ss;
       getSigSpec(valStr, ss);
       log("    RTLIL value: %s\n", log_signal(ss));
+      if (ss.empty() || !ss.is_fully_const()) {
+        log_error("Cannot understand value for port %s in cycle %d\n", inputName.c_str(), cycle);
+        continue;
+      }
+
+      RTLIL::IdString portname = cycleize_name(std::string("\\"+inputName), cycle);
+      log_debug("  cycle %d  value %s portname %s\n", cycle, valStr.c_str(), portname.c_str());
+
+      RTLIL::Wire *port = mod->wire(portname);
+      if (!port) {
+        log_error("Cannot find unrolled port %s\n", portname.c_str());
+        continue;
+      }
+      if (!port->port_input) {
+        log_error("Unrolled port %s is not an input\n", portname.c_str());
+        continue;
+      }
+
+      adjustSigSpecWidth(ss, port->width);
+
+      applyPortSignal(port, ss);
+
 
 
       cycle--;
@@ -853,10 +945,27 @@ struct DougSmashCmd : public Pass {
     // Create the new module
     destmod = design->addModule(RTLIL::escape_id(destmodname.str()));
 
-    log("Unrolling module `%s' into `%s' for num_cycles %d.\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
+    log("Unrolling module `%s' into `%s' for num_cycles=%d...\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
     unroll_module(srcmod, destmod, num_cycles);
 
+    // Optimize
+    log("Optimizing...\n");
+    log_push();
+    Pass::call_on_module(design, destmod, "stat");
+    Pass::call_on_module(design, destmod, "opt");
+    Pass::call_on_module(design, destmod, "stat");
+    log_pop();
+
+    log("Applying instruction encoding...\n");
     applyInstrEncoding(destmod, instrInfo->instrEncoding, num_cycles);
+
+    // Re-optimize
+    log("Re-optimizing...\n");
+    log_push();
+    Pass::call_on_module(design, destmod, "stat");
+    Pass::call_on_module(design, destmod, "opt");
+    Pass::call_on_module(design, destmod, "stat");
+    log_pop();
 
     log_header(design, "Writing LLVM data...\n");
     //targetName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
