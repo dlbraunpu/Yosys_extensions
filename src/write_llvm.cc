@@ -59,34 +59,39 @@ void my_log_wire(const RTLIL::Wire *wire)
 }
 
 
-static DriverFinder finder;
+class ValueTable {
+  public:
+    void add(llvm::Value*value, const DriverSpec& driver);
+    llvm::Value *find(const DriverSpec& driver);
+    void clear() { _dict.clear(); }
+
+  private:
+    dict<DriverSpec, llvm::Value*> _dict;
+};
 
 
-llvm::Value *generateValue(RTLIL::Wire *wire,
-                           std::shared_ptr<llvm::LLVMContext> c,
-                           std::shared_ptr<llvm::IRBuilder<>> b)
+void ValueTable::add(llvm::Value*value, const DriverSpec& driver)
 {
+  assert (_dict.find(driver) == _dict.end());  // Not already there
+  _dict[driver] = value;
+}
 
-  log("RTLIL Wire %s:\n", wire->name.c_str());
-  my_log_wire(wire);
-
-  DriverSpec dSpec;
-  finder.buildDriverOf(wire, dSpec);
-
-  // Print what drives the bits of this wire
-
-  log_driverspec(dSpec);
-  log("\n");
-
-
-  // TMP: Just return an arbitrary constant
-  return llvm::ConstantInt::get(llvmWidth(wire->width, c), 123, false);
-  
-  //return llvmInt(123, wire->width, c);
+llvm::Value *ValueTable::find(const DriverSpec& driver)
+{
+  auto pos = _dict.find(driver);
+  if (pos == _dict.end())  {
+    return nullptr;
+  }
+  return pos->second;
 }
 
 
+static ValueTable valueTable;
 
+static DriverFinder finder;
+
+
+// Create a Value representing the output port of the given cell.
 llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
                            std::shared_ptr<llvm::LLVMContext> c,
                            std::shared_ptr<llvm::IRBuilder<>> b)
@@ -99,10 +104,74 @@ llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
 
   // Print what drives the bits of this cell port
 
+  // TODO: Add the DriverSpec and its created Value to the valueTable.
+
   log_driverspec(dSpec);
 
   return nullptr;
 }
+
+
+llvm::Value *generateValue(const DriverSpec& dSpec,
+                           std::shared_ptr<llvm::LLVMContext> c,
+                           std::shared_ptr<llvm::IRBuilder<>> b)
+{
+  if (dSpec.is_wire()) {
+    // An entire wire, representing a module input port.
+    // Their values should have been pre-created as function args.
+    llvm::Value *val = valueTable.find(dSpec);
+    if (val) {
+      return val;  // Should normally be the case
+    }
+    assert(false);
+    return nullptr;
+
+  } else if (dSpec.is_cell()) {
+    // An entire cell output.
+    RTLIL::IdString portName;
+    RTLIL::Cell *cell = dSpec.as_cell(portName);
+    return generateValue(cell, portName, c, b);
+
+  } else if (dSpec.is_fully_const()) {
+    // We do not expect to see explicit 'x' values here!
+    assert(dSpec.is_fully_def());
+
+    // valStr will be like "01101011010".
+    std::string valStr = dSpec.as_const().as_string();
+
+    // Don't bother putting pure constants in the valueTable
+    return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), llvm::StringRef(valStr), 2 /*radix*/);
+
+  } else {
+    // A complex driverSpec: a mix of wires, ports, and constants (or slices of them).
+    // TODO
+    return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), 123, false);  // TMP
+  }
+}
+
+
+
+// The wire represents a target ASV, and is not NOT necessarily a port
+llvm::Value *generateDestValue(RTLIL::Wire *wire,
+                           std::shared_ptr<llvm::LLVMContext> c,
+                           std::shared_ptr<llvm::IRBuilder<>> b)
+{
+
+  log("RTLIL Wire %s:\n", wire->name.c_str());
+  my_log_wire(wire);
+
+  // Collect the drivers of each bit of the wire
+  DriverSpec dSpec;
+  finder.buildDriverOf(wire, dSpec);
+
+  // Print what drives the bits of this wire
+  log_driverspec(dSpec);
+  log("\n");
+
+  return generateValue(dSpec, c, b);
+}
+
+
 
 void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::string destName, std::string llvmFileName)
 {
@@ -163,7 +232,7 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   Builder->SetInsertPoint(BB);
 
   // All the real work happens here 
-  llvm::Value *destValue = generateValue(destWire, TheContext, Builder);
+  llvm::Value *destValue = generateDestValue(destWire, TheContext, Builder);
 
   // Testing code:  Print sources of every cell input
   for (auto cell : unrolledRtlMod->cells()) {
@@ -193,6 +262,7 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   output.close();
 
   finder.clear();  // Only becasue it is static
+  valueTable.clear();  // TODO make a proper class for this stuff
 
 }
 
