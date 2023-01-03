@@ -372,7 +372,7 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
   // To model the reset, add an inverter and an AND gate between D and Q
   // Negative resets don't need the inverter.
   RTLIL::Cell *and_gate = mod->addCell(mod->uniquify("$srst_and"), ID($and));
-  log_debug("Adding srst AND %s", and_gate->name.c_str());
+  log_debug("Adding srst AND %s\n", and_gate->name.c_str());
   and_gate->setParam(ID::A_WIDTH, ff.width);
   and_gate->setParam(ID::B_WIDTH, ff.width);
   and_gate->setParam(ID::Y_WIDTH, ff.width);
@@ -385,7 +385,7 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
   if (ff.pol_srst) {
     // Positive reset needs an inverter
     RTLIL::Cell *inv = mod->addCell(mod->uniquify("$srst_inv"), ID($not));
-    log_debug("Adding srst inverter %s", inv->name.c_str());
+    log_debug("Adding srst inverter %s\n", inv->name.c_str());
     inv->setParam(ID::A_WIDTH, 1);
     inv->setParam(ID::Y_WIDTH, 1);
     inv->setParam(ID::A_SIGNED, 0);
@@ -436,7 +436,7 @@ void wire_up_ce(RTLIL::Module* mod, FfData& ff,
   // To model the enable, add a mux between D and Q
   // Keep in mind the ce signal polarity
   RTLIL::Cell *mux = mod->addCell(mod->uniquify("$ce_mux"), ID($mux));
-  log_debug("Adding srst mux %s", mux->name.c_str());
+  log_debug("Adding srst mux %s\n", mux->name.c_str());
   mux->setParam(ID::WIDTH, ff.width);
 
   if (ff.pol_ce) {

@@ -332,7 +332,11 @@ struct DougSmashCmd : public Pass {
     // being placed upon them.
 
     for (auto pair : funcExtract::g_allowedTgt) {
-      RTLIL::IdString portname = cycleize_name(std::string("\\"+pair.first), num_cycles);
+      std::string tmpnam = pair.first;
+      if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
+        tmpnam = "\\" + tmpnam;
+      }
+      RTLIL::IdString portname = cycleize_name(tmpnam, num_cycles);
       RTLIL::Wire *port = destmod->wire(portname);
       if (!port || !port->port_input) {
         log_error("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());

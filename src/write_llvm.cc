@@ -47,7 +47,7 @@ class ValueTable {
 
 void ValueTable::add(llvm::Value*value, const DriverSpec& driver)
 {
-  assert (_dict.find(driver) == _dict.end());  // Not already there
+  log_assert (_dict.find(driver) == _dict.end());  // Not already there
   _dict[driver] = value;
 }
 
@@ -72,7 +72,8 @@ llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
                            std::shared_ptr<llvm::IRBuilder<>> b)
 {
 
-  log("RTLIL cell port %s %s  width %d:\n", cell->name.c_str(), port.c_str(), cell->getPort(port).size());
+  log("generateValue(): cell port %s %s  width %d:\n", cell->name.c_str(), port.c_str(), cell->getPort(port).size());
+  log_assert(cell->output(port));
 
   DriverSpec dSpec;
   finder.buildDriverOf(cell, port, dSpec);
@@ -87,6 +88,101 @@ llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
 }
 
 
+// Generate the value of the given chunk, which is constant, or a
+// slice of a single wire or cell output.  The result will be offset
+// by the given amount, and zero-extended to totalWidth.
+llvm::Value *generateValue(const DriverChunk& dChunk,
+                           int totalWidth, int offset,
+                           std::shared_ptr<llvm::LLVMContext> c,
+                           std::shared_ptr<llvm::IRBuilder<>> b)
+{
+  assert(totalWidth >= dChunk.size() + offset);
+
+  if (dChunk.isData()) {
+    // Sanity checks
+    log_assert(dChunk.offset == 0);
+    log_assert(dChunk.size() == dChunk.data.size());
+
+    // Build a string of the desired ones and zeros, with 0 padding
+    // at the beginning and/or end.
+
+    std::string valStr = RTLIL::Const(dChunk.data).as_string();
+    log_assert(valStr.size() == dChunk.size());
+
+    // Check for unwanted x
+    for (char& c : valStr) {
+      if (c == 'x') {
+        log_warning("x-ish driver chunk found: %s\n", valStr.c_str());
+        break;
+      }
+    }
+
+    // Clean up.
+    for (char& c : valStr) {
+      if (c == 'x') c = '0';
+    }
+
+    if (offset > 0) {
+      valStr += std::string('0', offset);
+    }
+
+    if (totalWidth > dChunk.size() + offset) {
+      valStr = std::string('0', totalWidth - chunk.size() - offset) + valStr;
+    }
+    log_assert(valStr.size() == totalWidth);
+
+    // Don't bother putting pure constants in the valueTable
+    return llvm::ConstantInt::get(llvmWidth(totalWidth, c), llvm::StringRef(valStr), 2 /*radix*/);
+  }
+
+  // OK, we have a slice of a wire or cell output.
+
+  if (offset == 0) {
+    // See if we already have a Value for this object slice
+    DriverSpec tmpDs(dChunk);
+    llvm::Value *val = valueTable.find(tmpDs);
+    if (val) {
+     if (offset == 0 && totalWidth == dChunk.size()) {
+        return val;  // We already have exactly what we need!
+
+  } 
+
+  if (dChunk.is_wire()) {
+    // A slice of a wire, representing a module input port.
+    // Their values should have been pre-created as function args.
+
+    llvm::Value *val = valueTable.find(dSpec);
+    log_assert(val);
+    if (val) {
+      return val;  // Should normally be the case
+    }
+    return nullptr;
+
+  } else if (dSpec.is_cell()) {
+    // An entire cell output.
+    RTLIL::IdString portName;
+    RTLIL::Cell *cell = dSpec.as_cell(portName);
+    return generateValue(cell, portName, c, b);
+
+  } else if (dSpec.is_fully_const()) {
+    // valStr will be like "01101011010".
+    std::string valStr = dSpec.as_const().as_string();
+
+    // Ideally there would not be explicit 'x' values here!
+    // The optimizaiton and cleanup already done should have gotten rid of most of them.
+    if (!dSpec.is_fully_def()) {
+      log_warning("x-ish driver spec found: %s\n", valStr.c_str());
+
+      // Clean up.
+      for (char& c : valStr) {
+        if (c == 'x') c = '0';
+      }
+    }
+
+    // Don't bother putting pure constants in the valueTable
+    return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), llvm::StringRef(valStr), 2 /*radix*/);
+
+
 llvm::Value *generateValue(const DriverSpec& dSpec,
                            std::shared_ptr<llvm::LLVMContext> c,
                            std::shared_ptr<llvm::IRBuilder<>> b)
@@ -98,7 +194,7 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
     if (val) {
       return val;  // Should normally be the case
     }
-    assert(false);
+    log_assert(false);
     return nullptr;
 
   } else if (dSpec.is_cell()) {
@@ -108,11 +204,19 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
     return generateValue(cell, portName, c, b);
 
   } else if (dSpec.is_fully_const()) {
-    // We do not expect to see explicit 'x' values here!
-    assert(dSpec.is_fully_def());
-
     // valStr will be like "01101011010".
     std::string valStr = dSpec.as_const().as_string();
+
+    // Ideally there would not be explicit 'x' values here!
+    // The optimizaiton and cleanup already done should have gotten rid of most of them.
+    if (!dSpec.is_fully_def()) {
+      log_warning("x-ish driver spec found: %s\n", valStr.c_str());
+
+      // Clean up.
+      for (char& c : valStr) {
+        if (c == 'x') c = '0';
+      }
+    }
 
     // Don't bother putting pure constants in the valueTable
     return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), llvm::StringRef(valStr), 2 /*radix*/);
@@ -123,8 +227,14 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
 
     log("generateValue for complex Driverspec\n");
     log_driverspec(dSpec);
+
+
+    std::Vector<llvm::Value*> values;
+    int offset = 0;
     for (const DriverChunk& chunk : dSpec.chunks()) {
       log_driverchunk(chunk);
+      values.push_back(generateValue(chunk, offset, c, b);
+      offset += chunk->size();
     }
 
     return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), 123, false);  // TMP
@@ -166,7 +276,7 @@ generateFunctionDecl(RTLIL::Module *mod, std::shared_ptr<llvm::Module> TheModule
   // and the unrolled copies of the original input ports.
   for (const RTLIL::IdString& portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
-    assert(port);
+    log_assert(port);
     if (port->port_input) {
       argTy.push_back(llvm::IntegerType::get(*c, port->width));
     }
@@ -232,7 +342,7 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   RTLIL::Wire *destWire = unrolledRtlMod->wire(wireName);
   if (!destWire) {
     log_error("Can't find wire for destination ASV %s\n", destName.c_str());
-    assert(false);
+    log_assert(false);
   }
 
   llvm::Function *func = generateFunctionDecl(unrolledRtlMod, TheModule, destWire, llvmContext);
@@ -249,7 +359,9 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
     for (auto& conn : cell->connections()) {
       // conn.first is the signal IdString, conn.second is its SigSpec
       if (cell->input(conn.first)) {
-        generateValue(cell, conn.first, llvmContext, Builder);
+        DriverSpec dSpec;
+        finder.buildDriverOf(conn.second, dSpec);
+        generateValue(dSpec, llvmContext, Builder);
         log("\n");
       }
     }
