@@ -144,7 +144,14 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
 
   } else {
     // A complex driverSpec: a mix of wires, ports, and constants (or slices of them).
-    // TODO
+    // Generate each chunk's value with the proper offset, and OR them together.
+
+    log("generateValue for complex Driverspec\n");
+    log_driverspec(dSpec);
+    for (const DriverChunk& chunk : dSpec.chunks()) {
+      log_driverchunk(chunk);
+    }
+
     return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), 123, false);  // TMP
   }
 }
@@ -173,6 +180,60 @@ llvm::Value *generateDestValue(RTLIL::Wire *wire,
 
 
 
+llvm::Function*
+generateFunctionDecl(RTLIL::Module *mod, std::shared_ptr<llvm::Module> TheModule,
+                           RTLIL::Wire *destWire,
+                           std::shared_ptr<llvm::LLVMContext> c)
+{
+  std::vector<llvm::Type *> argTy;
+
+  // Add every module input port, which includes the first-cycle ASV inputs
+  // and the unrolled copies of the original input ports.
+  for (const RTLIL::IdString& portname : mod->ports) {
+    RTLIL::Wire *port = mod->wire(portname);
+    assert(port);
+    if (port->port_input) {
+      argTy.push_back(llvm::IntegerType::get(*c, port->width));
+    }
+  }
+
+
+  // A return type of the correct width
+  llvm::Type* retTy = llvm::IntegerType::get(*c, destWire->width);
+
+
+  llvm::FunctionType *functype =
+    llvm::FunctionType::get(retTy, argTy, false);
+
+
+  // Strip off the "\" from the wire name.
+  std::string destName = destWire->name.str().substr(1);
+
+  // Create the main function
+  llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
+
+  llvm::Function *func = llvm::Function::Create(functype, linkage,
+                    "instr_"+destName, TheModule.get());
+                    //destInfo.get_instr_name()+"_"+destSimpleName, TheModule.get());
+
+  // Set the function's arg's names, and add them to the valueTable
+  unsigned n = 0;
+  for (const RTLIL::IdString& portname : mod->ports) {
+    RTLIL::Wire *port = mod->wire(portname);
+    if (port->port_input) {
+      llvm::Argument *arg = func->getArg(n);
+      arg->setName(portname.str());
+      valueTable.add(arg, DriverSpec(port));
+      n++;
+    }
+  }
+
+  return func;
+
+}
+
+
+
 void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::string destName, std::string llvmFileName)
 {
 
@@ -183,13 +244,12 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   log("%ld objects\n", finder.size());
 
 
-  std::shared_ptr<llvm::LLVMContext> TheContext = std::make_unique<llvm::LLVMContext>();
+  std::shared_ptr<llvm::LLVMContext> llvmContext = std::make_unique<llvm::LLVMContext>();
 
   std::shared_ptr<llvm::Module> TheModule =
-          std::make_unique<llvm::Module>("mod_"+modName+"_"+destName, *TheContext);
+          std::make_unique<llvm::Module>("mod_"+modName+"_"+destName, *llvmContext);
 
-  std::shared_ptr<llvm::IRBuilder<>> Builder = std::make_unique<llvm::IRBuilder<>>(*TheContext);
-
+  std::shared_ptr<llvm::IRBuilder<>> Builder = std::make_unique<llvm::IRBuilder<>>(*llvmContext);
 
   // Get the yosys RTLIL object representing the destination ASV.
   // TODO: Map the original Verilog register name to the actual wire name.
@@ -200,46 +260,21 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
     assert(false);
   }
 
-
-  std::vector<llvm::Type *> argTy;
-  // for now, two 32-bit args
-  argTy.push_back(llvm::IntegerType::get(*TheContext, 32));
-  argTy.push_back(llvm::IntegerType::get(*TheContext, 32));
-
-  // for now, a return type of the desired width
-  llvm::Type* retTy = llvm::IntegerType::get(*TheContext, destWire->width);
-
-
-  // This function type definition is suitable for TheFunction 
-  llvm::FunctionType *FT =
-    llvm::FunctionType::get(retTy, argTy, false);
-
-  //std::string destSimpleName = funcExtract::var_name_convert(destName, true);
-
-  // Create the main function
-  llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
-
-  llvm::Function *TheFunction = llvm::Function::Create(FT, linkage,
-                    "instr_"+destName, TheModule.get());
-                    //destInfo.get_instr_name()+"_"+destSimpleName, TheModule.get());
-
-  // Set the function's arg's names
-  TheFunction->getArg(0)->setName("arg0");
-  TheFunction->getArg(1)->setName("arg1");
+  llvm::Function *func = generateFunctionDecl(unrolledRtlMod, TheModule, destWire, llvmContext);
 
   // basic block
-  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*TheContext, "bb_;_"+destName, TheFunction);
+  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*llvmContext, "bb_;_"+destName, func);
   Builder->SetInsertPoint(BB);
 
   // All the real work happens here 
-  llvm::Value *destValue = generateDestValue(destWire, TheContext, Builder);
+  llvm::Value *destValue = generateDestValue(destWire, llvmContext, Builder);
 
   // Testing code:  Print sources of every cell input
   for (auto cell : unrolledRtlMod->cells()) {
     for (auto& conn : cell->connections()) {
       // conn.first is the signal IdString, conn.second is its SigSpec
       if (cell->input(conn.first)) {
-        generateValue(cell, conn.first, TheContext, Builder);
+        generateValue(cell, conn.first, llvmContext, Builder);
         log("\n");
       }
     }
@@ -249,7 +284,7 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   llvm::Instruction* retInst = Builder->CreateRet(destValue);
 
 
-  llvm::verifyFunction(*TheFunction);
+  llvm::verifyFunction(*func);
   llvm::verifyModule(*TheModule);
 
   std::string Str;

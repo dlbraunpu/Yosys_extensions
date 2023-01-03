@@ -1187,7 +1187,7 @@ bool DriverSpec::is_fully_const() const
 
 	pack();
 	for (auto it = chunks_.begin(); it != chunks_.end(); it++)
-		if (it->width > 0 && it->wire != nullptr)
+		if (it->width > 0 && it->is_object())
 			return false;
 	return true;
 }
@@ -1198,7 +1198,7 @@ bool DriverSpec::is_fully_zero() const
 
 	pack();
 	for (auto it = chunks_.begin(); it != chunks_.end(); it++) {
-		if (it->width > 0 && it->wire != nullptr)
+		if (it->width > 0 && it->is_object())
 			return false;
 		for (size_t i = 0; i < it->data.size(); i++)
 			if (it->data[i] != RTLIL::State::S0)
