@@ -31,6 +31,7 @@
 
 #include "llvm/ADT/APInt.h"
 
+#include "util.h"
 #include "unroll.h"
 #include "write_llvm.h"
 
@@ -51,15 +52,6 @@ PRIVATE_NAMESPACE_BEGIN
 
 bool verbose, noattr;
 
-// Doug
-
-
-
-// Doug: add "_#<cycle>" to the name
-IdString cycleize_name(IdString object_name, int cycle)
-{
-  return stringf("%s_#%d", object_name.c_str(), cycle);
-}
 
 
 
@@ -86,31 +78,19 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
 }
 
 
-
-// Truncate or zero-extend the SigSpec as necessary to make it the given width.
-// An all-x value will be x-extended.
-void
-adjustSigSpecWidth(RTLIL::SigSpec& ss, int newWidth)
-{
-  int oldWidth = ss.size();
-  if (oldWidth > newWidth) {
-    ss.remove(newWidth, oldWidth - newWidth);
-  } else if (oldWidth < newWidth) {
-    RTLIL::State padding = ss.is_fully_undef() ? RTLIL::State::Sx : RTLIL::State::S0;
-    while (ss.size() < newWidth)
-      ss.append(padding);
-  }
-}
+pool<RTLIL::Wire*> processedPorts;
 
 
 // If necessary this will create a new port wire and a connection that applies any
 // 0/1 values to the original port wire.  If ss is all x, nothing has to be done.
 RTLIL::Wire *
-applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss)
+applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool deleteDeadPort)
 {
-  assert(origPort->port_input);
+  log_assert(origPort->port_input);
+  log_assert(processedPorts.count(origPort) == 0);
 
   if (ss.is_fully_undef()) {
+    processedPorts.insert(origPort);
     return origPort;  // no change needed
   }
 
@@ -122,27 +102,31 @@ applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss)
   RTLIL::IdString newName = mod->uniquify(newStr);
   mod->rename(origPort, newName);
 
-  RTLIL::Wire *newPort = mod->addWire(origName, origPort->width);
+  RTLIL::Wire *newPort = nullptr;
+  if (!(ss.is_fully_const() && deleteDeadPort)) {
+    // Make a new port only if it is useful or wanted
+    newPort = mod->addWire(origName, origPort->width);
 
-  // The new port takes over the old port's status
-  newPort->port_input = origPort->port_input;
+    // The new port takes over the old port's status
+    newPort->port_input = origPort->port_input;
+    newPort->port_output = origPort->port_output;
+    // TODO: Copy or move orig port attribtes to new wire.
+  }
   origPort->port_input = false;
-  newPort->port_output = origPort->port_output;
   origPort->port_output = false;
-  mod->fixup_ports();  // TODO: Can this be done less often?
-  // TODO: Copy or move orig port attribtes to new wire.
 
   if (ss.is_fully_const()) {
-    // Simply connect the orignal port wire to the constant SigSpec.
-    // The new port wire is a dead-end.
+    // Simply connect the original port wire to the constant SigSpec.
+    // The new port wire (if any) is a dead-end.
     mod->connect(RTLIL::SigSpec(origPort), ss);
   } else {
     // a partially-constant SigSpec: connect the old port to either the new port or the constant
     // on a bit-by-bit basis.
+    log_assert(newPort);
 
     RTLIL::SigSpec ss2;
     for (int n=0; n < origPort->width; ++n) {
-      assert(!ss.is_wire());
+      log_assert(!ss.is_wire());
       if (ss[n].data == RTLIL::State::S0 ||
           ss[n].data == RTLIL::State::S1) {
         ss2.append(ss[n]);
@@ -153,6 +137,7 @@ applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss)
     mod->connect(RTLIL::SigSpec(origPort), ss2);
   }
 
+  if (newPort) processedPorts.insert(newPort);
   return newPort;
 }
 
@@ -179,7 +164,7 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
       }
 
       RTLIL::IdString portname = cycleize_name(std::string("\\"+inputName), cycle);
-      log_debug("  cycle %d  value %s portname %s\n", cycle, valStr.c_str(), portname.c_str());
+      log_debug("encoding: cycle %d  value %s portname %s\n", cycle, valStr.c_str(), portname.c_str());
 
       RTLIL::Wire *port = mod->wire(portname);
       if (!port) {
@@ -193,7 +178,7 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
 
       adjustSigSpecWidth(ss, port->width);
 
-      applyPortSignal(port, ss);
+      applyPortSignal(port, ss, true /*deleteDeadPort*/);
 
 
 
@@ -340,6 +325,35 @@ struct DougSmashCmd : public Pass {
 
     log("Applying instruction encoding...\n");
     applyInstrEncoding(destmod, instrInfo->instrEncoding, num_cycles);
+
+    // TODO: Apply NOP values as necessary to input ports.
+
+    // Identify all first-cycle ASV inputs as processed, to prevent a reset value from
+    // being placed upon them.
+
+    for (auto pair : funcExtract::g_allowedTgt) {
+      RTLIL::IdString portname = cycleize_name(std::string("\\"+pair.first), num_cycles);
+      RTLIL::Wire *port = destmod->wire(portname);
+      if (!port || !port->port_input) {
+        log_error("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());
+        continue;
+      }
+      processedPorts.insert(port);
+    }
+    destmod->fixup_ports();  // Necessary since we added and removed ports
+
+    // now give every remaining input port a zero reset value.
+    // TODO: read and use data in rst.vcd
+    for (const RTLIL::IdString& portname : destmod->ports) {
+      RTLIL::Wire *port = destmod->wire(portname);
+      log_assert(port);
+      if (port->port_input && processedPorts.count(port) == 0) {
+        RTLIL::SigSpec ss(RTLIL::State::S0, port->width);
+        log_debug("zeroing uninteresting input port %s\n", portname.c_str());
+        applyPortSignal(port, ss, true /*deleteDeadPort*/);
+      }
+    }
+    destmod->fixup_ports();  // Necessary since we added and removed ports
 
     // Re-optimize
     log("Re-optimizing...\n");

@@ -3,6 +3,7 @@
 
 #include "kernel/rtlil.h"
 #include "backends/rtlil/rtlil_backend.h"
+#include "util.h"
 
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
@@ -1529,10 +1530,10 @@ void DriverFinder::build(RTLIL::Module *mod)
   for (auto wire : module->wires()) {
     if (wire->port_input) {
       RTLIL::SigSpec canonical_sig = sigmap(wire);
-      //log("\nport_input wire :\n");
-      //my_log_wire(wire);
-      //log("\ncanonical sigspec:\n");
-      //my_log_sigspec(canonical_sig);
+      log("\nport_input wire :\n");
+      my_log_wire(wire);
+      log("\ncanonical sigspec:\n");
+      my_log_sigspec(canonical_sig);
       int idx = 0;
       for (auto& bit : canonical_sig.to_sigbit_vector()) {
         // sigmap(wire) is the canonical SigSpec.

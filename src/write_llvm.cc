@@ -23,6 +23,7 @@
 #include "kernel/sigtools.h"
 #include "backends/rtlil/rtlil_backend.h"
 
+#include "util.h"
 #include "driver_tools.h"
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
@@ -31,32 +32,6 @@ USING_YOSYS_NAMESPACE  // Does "using namespace"
 #define llvmWidth(a, c) llvm::IntegerType::get(*c, a)
 #define llvmInt(val, width, c) llvm::ConstantInt::get(llvmWidth(width, c), val, false);
 
-
-void my_log_sigspec(const RTLIL::SigSpec& sig)
-{
-  std::stringstream buf;
-  RTLIL_BACKEND::dump_sigspec(buf, sig, false);
-  log("sigspec: %s\n", buf.str().c_str());
-}
-
-
-
-void my_log_sigbit(const RTLIL::SigBit& bit)
-{
-  if (bit.is_wire()) {
-    log("sigbit type wire %s offset %d\n", bit.wire->name.c_str(), bit.offset);
-  } else {
-    log("sigbit type constant %d\n", bit.data);
-  }
-}
-
-
-void my_log_wire(const RTLIL::Wire *wire)
-{
-  log("wire %s  width %d  start_offset %d  port_id %d  input %d  output %d\n", wire->name.c_str(),
-      wire->width, wire->start_offset, wire->port_id, wire->port_input, wire->port_output);
-
-}
 
 
 class ValueTable {

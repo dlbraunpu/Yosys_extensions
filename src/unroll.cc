@@ -21,7 +21,6 @@
  *
  */
 
-
 #include "live_analysis/src/global_data.h"
 #include "func_extract/src/global_data_struct.h"
 #include "func_extract/src/parse_fill.h"
@@ -31,7 +30,9 @@
 
 #include "llvm/ADT/APInt.h"
 
+#include "unroll.h"
 #include "write_llvm.h"
+#include "util.h"
 
 #include "kernel/register.h"
 #include "kernel/celltypes.h"
@@ -243,14 +244,6 @@ no_special_reg_name:
   }
 }
 
-
-
-
-// Doug: add "_#<cycle>" to the name
-IdString cycleize_name(IdString object_name, int cycle)
-{
-  return stringf("%s_#%d", object_name.c_str(), cycle);
-}
 
 
 // Doug: add "_#<cycle>" to the object's name, and ensure that it is unique.
