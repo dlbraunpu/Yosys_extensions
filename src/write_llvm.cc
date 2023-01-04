@@ -34,6 +34,16 @@ LLVMWriter::LLVMWriter()
 
 }
 
+LLVMWriter::~LLVMWriter()
+{
+}
+
+void
+LLVMWriter::reset()
+{
+  finder.clear();
+  valueCache.clear();
+}
 
 
 
@@ -59,13 +69,13 @@ LLVMWriter::llvmZero(unsigned width)
 }
 
 
-void LLVMWriter::valueCache::add(llvm::Value*value, const DriverSpec& driver)
+void LLVMWriter::ValueCache::add(llvm::Value*value, const DriverSpec& driver)
 {
   log_assert (_dict.find(driver) == _dict.end());  // Not already there
   _dict[driver] = value;
 }
 
-llvm::Value *LLVMWriter::valueCache::find(const DriverSpec& driver)
+llvm::Value *LLVMWriter::ValueCache::find(const DriverSpec& driver)
 {
   auto pos = _dict.find(driver);
   if (pos == _dict.end())  {
@@ -539,6 +549,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, st
     log_error("Can't find wire for destination ASV %s\n", destName.c_str());
     log_assert(false);
   }
+  my_log_wire(destWire);
 
   llvm::Function *func = generateFunctionDecl(unrolledRtlMod, destWire);
 
@@ -547,8 +558,20 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, st
   b->SetInsertPoint(BB);
 
   // All the real work happens here 
-  llvm::Value *destValue = generateDestValue(destWire);
+
+
+  // Collect the drivers of each bit of the destination wire
+  DriverSpec dSpec;
+  finder.buildDriverOf(destWire, dSpec);
+
+  // Print what drives the bits of this wire
+  log_driverspec(dSpec);
+  log("\n");
+
+  llvm::Value *destValue = generateValue(dSpec);
   b->CreateRet(destValue);
+
+  log_debug("%lu Values in valueCache\n", valueCache.size());
 
   llvm::verifyFunction(*func);
   llvm::verifyModule(*llvmMod);
@@ -563,11 +586,4 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, st
   output.close();
 
   reset();
-}
-
-void
-LLVMWriter::reset()
-{
-  finder.clear();
-  valueCache.clear();
 }

@@ -19,11 +19,12 @@ class LLVMWriter {
 
 private:
 
-  class valueCache {
+  class ValueCache {
     public:
       void add(llvm::Value*value, const DriverSpec& driver);
       llvm::Value *find(const DriverSpec& driver);
       void clear() { _dict.clear(); }
+      size_t size() { return _dict.size(); }
 
     private:
       Yosys::dict<DriverSpec, llvm::Value*> _dict;
@@ -34,7 +35,9 @@ private:
   std::shared_ptr<llvm::LLVMContext> c;
   std::shared_ptr<llvm::Module> llvmMod;
 
-  valueCache valueCache;
+
+
+  ValueCache valueCache;
   DriverFinder finder;
 
 
