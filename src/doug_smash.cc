@@ -369,7 +369,9 @@ struct DougSmashCmd : public Pass {
 
     log_header(design, "Writing LLVM data...\n");
     //targetName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
-    write_llvm_ir(destmod, "xxx"/*module name*/, targetName, "xxx.llvm" /*output file name*/);
+
+    LLVMWriter writer;
+    writer.write_llvm_ir(destmod, "xxx"/*module name*/, targetName, "xxx.llvm" /*output file name*/);
   }
 } DougSmashCmd;
 

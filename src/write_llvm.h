@@ -10,41 +10,90 @@
 // It seems to be caused by the identifier "ID" being used in clever ways by both packages.
 #include "llvm/IR/PassManager.h"
 
-
 // Yosys headers
 #include "kernel/yosys.h"
 
+#include "driver_tools.h"
 
-// Struct to specify a particular bit of a particular port of a particular cell.
-// BTW, all the built-in cells have only one output, named "\Y"
-struct CellPortBit {
-  Yosys::RTLIL::Cell *cell;
-  Yosys::RTLIL::IdString port;
-  int bit;
+class LLVMWriter {
+
+private:
+
+  class valueCache {
+    public:
+      void add(llvm::Value*value, const DriverSpec& driver);
+      llvm::Value *find(const DriverSpec& driver);
+      void clear() { _dict.clear(); }
+
+    private:
+      Yosys::dict<DriverSpec, llvm::Value*> _dict;
+  };
+
+
+  std::shared_ptr<llvm::IRBuilder<>> b;
+  std::shared_ptr<llvm::LLVMContext> c;
+  std::shared_ptr<llvm::Module> llvmMod;
+
+  valueCache valueCache;
+  DriverFinder finder;
+
+
+  llvm::IntegerType *llvmWidth(unsigned a);
+
+
+  // Dangerous: only supports up to 64 bits.
+  llvm::ConstantInt *llvmInt(uint64_t val, unsigned width);
+
+
+  // More useful
+  llvm::ConstantInt *llvmZero(unsigned width);
+
+
+
+  // Find or create a Value representing what drives the given input port of the given cell.
+  llvm::Value *generateInputValue(Yosys::RTLIL::Cell *cell,
+                             const Yosys::RTLIL::IdString& port);
+
+
+
+  // Create a Value representing the output port of the given cell.
+  // Since this is not given a DriverSpec, it does not touch the valueCache.
+  // The caller is reponsible for that.
+  // TODO: Should it instead make a temporary DriverSpec to access the valueCache?
+  llvm::Value *generateCellOutputValue(Yosys::RTLIL::Cell *cell,
+                             const Yosys::RTLIL::IdString& port);
+
+
+  // Generate the value of the given chunk, which is constant, or a
+  // slice of a single wire or cell output.  The result will be offset
+  // by the given amount, and zero-extended to totalWidth.
+  llvm::Value *generateValue(const DriverChunk& chunk,
+                             int totalWidth, int offset);
+
+
+  llvm::Value *generateValue(const DriverSpec& dSpec);
+
+
+  // The wire represents a target ASV, and is not NOT necessarily a port
+  llvm::Value *generateDestValue(Yosys::RTLIL::Wire *wire);
+
+
+  llvm::Function*
+  generateFunctionDecl(Yosys::RTLIL::Module *mod,
+                             Yosys::RTLIL::Wire *destWire);
+
+
+public:
+  LLVMWriter();
+  ~LLVMWriter();
+
+  void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
+                     std::string modName, std::string destName,
+                     std::string llvmFileName);
+
+  void reset();
+
 };
 
-// Struct to specify a particular bit of a particular wire
-struct WireBit {
-  Yosys::RTLIL::Wire *wire;
-  int bit;
-};
-
-
-void my_log_sigspec(const Yosys::RTLIL::SigSpec& sig);
-void my_log_sigbit(const Yosys::RTLIL::SigBit& bit);
-
-void buildSignalMaps(Yosys::RTLIL::Module *module);
-
-WireBit *getDrivingWire(const Yosys::RTLIL::SigBit& sigbit);
-
-CellPortBit *getDrivingCell(const Yosys::RTLIL::SigBit& sigbit);
-
-llvm::Value *generateValue(Yosys::RTLIL::Wire *wire,
-                           std::shared_ptr<llvm::LLVMContext> c,
-                           std::shared_ptr<llvm::IRBuilder<>> b);
-
-
-void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
-                   std::string modName, std::string destName, std::string llvmFileName);
 
 #endif
