@@ -245,6 +245,7 @@ public:
 
 	bool is_wire() const;
 	bool is_cell() const;
+	bool is_object() const { return is_cell() || is_wire(); }
 	bool is_chunk() const;
 	inline bool is_bit() const { return width_ == 1; }
 

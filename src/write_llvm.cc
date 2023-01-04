@@ -28,13 +28,28 @@
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
-// Copied from check_regs.cpp 
-#define llvmWidth(a, c) llvm::IntegerType::get(*c, a)
-#define llvmInt(val, width, c) llvm::ConstantInt::get(llvmWidth(width, c), val, false);
 
 
+llvm::IntegerType *llvmWidth(unsigned a, std::shared_ptr<llvm::LLVMContext> c) {
+  return llvm::IntegerType::get(*c, a);
+}
 
-class ValueTable {
+
+// Dangerous: only supports up to 64 bits.
+llvm::ConstantInt *llvmInt(uint64_t val, unsigned width, std::shared_ptr<llvm::LLVMContext> c)
+{
+  return llvm::ConstantInt::get(llvmWidth(width, c), val, false);
+}
+
+
+// More useful
+llvm::ConstantInt *llvmZero(unsigned width, std::shared_ptr<llvm::LLVMContext> c)
+{
+  return llvm::ConstantInt::get(llvmWidth(width, c), 0, false);
+}
+
+
+class valueCache {
   public:
     void add(llvm::Value*value, const DriverSpec& driver);
     llvm::Value *find(const DriverSpec& driver);
@@ -45,13 +60,13 @@ class ValueTable {
 };
 
 
-void ValueTable::add(llvm::Value*value, const DriverSpec& driver)
+void valueCache::add(llvm::Value*value, const DriverSpec& driver)
 {
   log_assert (_dict.find(driver) == _dict.end());  // Not already there
   _dict[driver] = value;
 }
 
-llvm::Value *ValueTable::find(const DriverSpec& driver)
+llvm::Value *valueCache::find(const DriverSpec& driver)
 {
   auto pos = _dict.find(driver);
   if (pos == _dict.end())  {
@@ -61,29 +76,209 @@ llvm::Value *ValueTable::find(const DriverSpec& driver)
 }
 
 
-static ValueTable valueTable;
+static valueCache valueCache;
 
 static DriverFinder finder;
 
+// forward decl
+llvm::Value *generateValue(const DriverSpec& dSpec,
+                           std::shared_ptr<llvm::LLVMContext> c,
+                           std::shared_ptr<llvm::IRBuilder<>> b);
 
-// Create a Value representing the output port of the given cell.
-llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
+
+
+// Find or create a Value representing what drives the given input port of the given cell.
+llvm::Value *generateInputValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
                            std::shared_ptr<llvm::LLVMContext> c,
                            std::shared_ptr<llvm::IRBuilder<>> b)
 {
-
-  log("generateValue(): cell port %s %s  width %d:\n", cell->name.c_str(), port.c_str(), cell->getPort(port).size());
-  log_assert(cell->output(port));
+  log_assert(cell->hasPort(port));
+  log_assert(cell->input(port));
 
   DriverSpec dSpec;
-  finder.buildDriverOf(cell, port, dSpec);
+  finder.buildDriverOf(cell->getPort(port), dSpec);
 
-  // Print what drives the bits of this cell port
+  // Get the Value for the input connection
+  return generateValue(dSpec, c, b);
+}
 
-  // TODO: Add the DriverSpec and its created Value to the valueTable.
 
-  log_driverspec(dSpec);
 
+
+// Create a Value representing the output port of the given cell.
+// Since this is not given a DriverSpec, it does not touch the valueCache.
+// The caller is reponsible for that.
+// TODO: Should it instead make a temporary DriverSpec to access the valueCache?
+llvm::Value *generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
+                           std::shared_ptr<llvm::LLVMContext> c,
+                           std::shared_ptr<llvm::IRBuilder<>> b)
+{
+  size_t numConns = cell->connections().size();
+
+  log("generateCellOutputValue(): cell port %s %s  width %d:\n", cell->name.c_str(), port.c_str(), cell->getPort(port).size());
+  log_assert(cell->output(port));
+
+  // TODO: If \A or \B widths are bigger than their connections, zero
+  // or sign-extend the input data.  Consider \SIGNED attributes
+  // BTW, SigSpecs and Wires do not have any information about signed-ness
+
+  // Here we handle only builtin cells.
+  // Hierarchical modules are a different thing.
+  log_assert(cell->name[0] == '$');
+  log_assert(cell->type[0] == '$');
+  log_assert(numConns >= 2);
+  log_assert(numConns <= 4);
+
+  log_assert(port == "\\Y");  // True for all built-in cells.
+  unsigned widthY = (unsigned)(cell->getPort(port).size());
+
+  // Get the Value at the first cell input
+  RTLIL::IdString A("\\A");
+  llvm::Value *valA = generateInputValue(cell, A, c, b);
+  unsigned widthA = valA->getType()->getIntegerBitWidth();
+
+  // A different case for each possible cell type (unary, binary, and muxes).
+
+  if (numConns == 2) {
+
+    // A unary operator. 
+    // TODO: Sanity check: pin widths match driver/load widths.
+    // Also that reduce cells have output width of 1.
+
+    log_assert(widthY == widthA || widthY == 1);
+
+    if (cell->type == "$not") {
+      return b->CreateNot(valA);
+    } else if (cell->type == "$pos") {
+      return valA;
+    } else if (cell->type == "$neg") {
+      return b->CreateNeg(valA);
+    } else if (cell->type == "$reduce_and") {
+      return b->CreateICmpEQ(b->CreateNot(valA), llvmZero(widthA, c));
+    } else if (cell->type == "$reduce_or" || cell->type == "$reduce_bool") {
+      return b->CreateICmpNE(valA, llvmZero(widthA, c));
+    } else if (cell->type == "$reduce_xor") {
+      // A trickier operation: XOR, a parity calculation.
+      // Need to declare and use the llvm.ctpop intrinsic function.
+      std::vector<llvm::Type *> arg_type;
+      arg_type.push_back(llvmWidth(widthA, c));
+      llvm::Function *fun = llvm::Intrinsic::getDeclaration(TheModule.get(), llvm::Intrinsic::ctpop, arg_type);
+      llvm::Value *popcnt = b->CreateCall(fun, valA);
+      return b->CreateTrunc(popcnt, llvmWidth(1, c));  // Return low-order bit
+    } else if (cell->type == "$reduce_xnor") {
+      // Same as reduce_xor, plus invert.
+      std::vector<llvm::Type *> arg_type;
+      arg_type.push_back(llvmWidth(widthA, c));
+      llvm::Function *fun = llvm::Intrinsic::getDeclaration(TheModule.get(), llvm::Intrinsic::ctpop, arg_type);
+      llvm::Value *popcnt = b->CreateCall(fun, valA);
+      return b->CreateNot(b->CreateTrunc(popcnt, llvmWidth(1, c)));  // Return inverted low-order bit
+    } else if (cell->type == "$logic_not") {
+      return b->CreateICmpEQ(valA, llvmZero(widthA, c));
+    } 
+
+    log_error("Unsupported unary cell %s\n", cell->type.c_str());
+    return valA;
+
+    // TODO: For the unary cells that output a logical value ($reduce_and,
+    // $reduce_or, $reduce_xor, $reduce_xnor, $reduce_bool, $logic_not), when
+    // the \Y_WIDTH parameter is greater than 1, the output is zero-extended,
+    // and only the least significant bit varies.
+
+  }
+
+  // Get the Value at the second cell input
+  RTLIL::IdString B("\\B");
+  llvm::Value *valB = generateInputValue(cell, B, c, b);
+  unsigned widthB = valB->getType()->getIntegerBitWidth();
+
+  if (numConns == 3) {
+
+    log_assert(widthY == widthA || widthY == 1);
+    log_assert(widthA == widthB);
+
+    if (cell->type == "$and") {
+      return b->CreateAnd(valA, valB);
+    } else if (cell->type == "$or") {
+      return b->CreateOr(valA, valB);
+    } else if (cell->type == "$xor") {
+      return b->CreateXor(valA, valB);
+    } else if (cell->type == "$xnor") {
+      return b->CreateNot(b->CreateXor(valA, valB));
+    } else if (cell->type == "$shl") {
+      return b->CreateShl(valA, valB);
+    } else if (cell->type == "$shr") {
+      return b->CreateLShr(valA, valB);
+    } else if (cell->type == "$sshl") {
+      return b->CreateShl(valA, valB);  // Same as $shl
+    } else if (cell->type == "$sshr") {
+      return b->CreateAShr(valA, valB);
+    } else if (cell->type == "$logic_and") {
+      return b->CreateAnd(b->CreateICmpNE(valA, llvmZero(widthA, c)),
+                          b->CreateICmpNE(valB, llvmZero(widthB, c)));
+    } else if (cell->type == "$logic_or") {
+      return b->CreateOr(b->CreateICmpNE(valA, llvmZero(widthA, c)),
+                          b->CreateICmpNE(valB, llvmZero(widthB, c)));
+
+      // TODO: $eqx, etc.  $pos
+
+    } else if (cell->type == "$lt") {
+      return b->CreateICmpULT(valA, valB);
+    } else if (cell->type == "$le") {
+      return b->CreateICmpULE(valA, valB);
+    } else if (cell->type == "$eq") {
+      return b->CreateICmpEQ(valA, valB);
+    } else if (cell->type == "$ne") {
+      return b->CreateICmpNE(valA, valB);
+    } else if (cell->type == "$ge") {
+      return b->CreateICmpUGE(valA, valB);
+    } else if (cell->type == "$gt") {
+      return b->CreateICmpUGT(valA, valB);
+    } else if (cell->type == "$add") {
+      return b->CreateAdd(valA, valB);
+    } else if (cell->type == "$sub") {
+      return b->CreateSub(valA, valB);
+    } else if (cell->type == "$mul") {
+      return b->CreateMul(valA, valB);
+    } else if (cell->type == "$div") {
+      return b->CreateUDiv(valA, valB);  // Needs work?
+    } else if (cell->type == "$mod") {
+      return b->CreateUDiv(valA, valB);
+
+      // TODO: $shift and $shiftx, $divfloor, etc.
+      // TODO: See above about logic operators with Y width > 1
+
+    } 
+
+    log_warning("Unsupported binary cell %s\n", cell->type.c_str());
+    return valA;
+  }
+
+  // Get the Value at the third cell input
+  RTLIL::IdString S("\\S");
+  llvm::Value *valS = generateInputValue(cell, S, c, b);
+  unsigned widthS = valS->getType()->getIntegerBitWidth();
+
+  if (numConns == 4) {
+    // Muxes
+    log_assert(widthY == widthA);
+    log_assert(widthA == widthB);
+    log_assert(widthS == 1);
+
+    if (cell->type == "$mux") {
+      return b->CreateSelect(valS, valA, valB);
+    } else if (cell->type == "$pmux") {
+      log_warning("Unsupported pmux cell %s\n", cell->type.c_str());
+      return valA;
+    } else if (cell->type == "$tribuf") {
+      log_warning("Unsupported tribuf cell %s\n", cell->type.c_str());
+      return valA;
+    }
+
+    log_warning("Unsupported mux-type cell %s\n", cell->type.c_str());
+    return valA;
+  }
+
+  log_warning("Totally weird cell %s\n", cell->type.c_str());
   return nullptr;
 }
 
@@ -91,23 +286,23 @@ llvm::Value *generateValue(RTLIL::Cell *cell, const RTLIL::IdString& port,
 // Generate the value of the given chunk, which is constant, or a
 // slice of a single wire or cell output.  The result will be offset
 // by the given amount, and zero-extended to totalWidth.
-llvm::Value *generateValue(const DriverChunk& dChunk,
+llvm::Value *generateValue(const DriverChunk& chunk,
                            int totalWidth, int offset,
                            std::shared_ptr<llvm::LLVMContext> c,
                            std::shared_ptr<llvm::IRBuilder<>> b)
 {
-  assert(totalWidth >= dChunk.size() + offset);
+  assert(totalWidth >= chunk.size() + offset);
 
-  if (dChunk.isData()) {
+  if (chunk.is_data()) {
     // Sanity checks
-    log_assert(dChunk.offset == 0);
-    log_assert(dChunk.size() == dChunk.data.size());
+    log_assert(chunk.offset == 0);
+    log_assert((long unsigned)chunk.size() == chunk.data.size());
 
     // Build a string of the desired ones and zeros, with 0 padding
     // at the beginning and/or end.
 
-    std::string valStr = RTLIL::Const(dChunk.data).as_string();
-    log_assert(valStr.size() == dChunk.size());
+    std::string valStr = RTLIL::Const(chunk.data).as_string();
+    log_assert(valStr.size() == (long unsigned)chunk.size());
 
     // Check for unwanted x
     for (char& c : valStr) {
@@ -126,74 +321,81 @@ llvm::Value *generateValue(const DriverChunk& dChunk,
       valStr += std::string('0', offset);
     }
 
-    if (totalWidth > dChunk.size() + offset) {
+    if (totalWidth > chunk.size() + offset) {
       valStr = std::string('0', totalWidth - chunk.size() - offset) + valStr;
     }
-    log_assert(valStr.size() == totalWidth);
+    log_assert(valStr.size() == (long unsigned)totalWidth);
 
-    // Don't bother putting pure constants in the valueTable
+    // Don't bother putting pure constants in the valueCache
     return llvm::ConstantInt::get(llvmWidth(totalWidth, c), llvm::StringRef(valStr), 2 /*radix*/);
   }
 
   // OK, we have a slice of a wire or cell output.
 
-  if (offset == 0) {
-    // See if we already have a Value for this object slice
-    DriverSpec tmpDs(dChunk);
-    llvm::Value *val = valueTable.find(tmpDs);
-    if (val) {
-     if (offset == 0 && totalWidth == dChunk.size()) {
-        return val;  // We already have exactly what we need!
+  // See if we already have a Value for this object slice
+  DriverSpec tmpDs(chunk);
+  llvm::Value *val = valueCache.find(tmpDs);
 
-  } 
-
-  if (dChunk.is_wire()) {
-    // A slice of a wire, representing a module input port.
-    // Their values should have been pre-created as function args.
-
-    llvm::Value *val = valueTable.find(dSpec);
-    log_assert(val);
-    if (val) {
-      return val;  // Should normally be the case
-    }
-    return nullptr;
-
-  } else if (dSpec.is_cell()) {
-    // An entire cell output.
-    RTLIL::IdString portName;
-    RTLIL::Cell *cell = dSpec.as_cell(portName);
-    return generateValue(cell, portName, c, b);
-
-  } else if (dSpec.is_fully_const()) {
-    // valStr will be like "01101011010".
-    std::string valStr = dSpec.as_const().as_string();
-
-    // Ideally there would not be explicit 'x' values here!
-    // The optimizaiton and cleanup already done should have gotten rid of most of them.
-    if (!dSpec.is_fully_def()) {
-      log_warning("x-ish driver spec found: %s\n", valStr.c_str());
-
-      // Clean up.
-      for (char& c : valStr) {
-        if (c == 'x') c = '0';
-      }
+  if (!val) {
+    // If not, we have to generate it.
+    // Find or make a Value for the entire wire or cell output
+    tmpDs = chunk.wire ? DriverSpec(chunk.wire) : DriverSpec(chunk.cell, chunk.port);
+    log_assert(tmpDs.is_cell() || tmpDs.is_wire());
+    val = valueCache.find(tmpDs);
+    if (!val) {
+      val = generateValue(tmpDs, c, b);
     }
 
-    // Don't bother putting pure constants in the valueTable
-    return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), llvm::StringRef(valStr), 2 /*radix*/);
+    // Right-shift the value if necessary
+    if (chunk.offset > 0) {
+      val = b->CreateLShr(val, chunk.offset);
+    }
+
+    // Truncate the value if necessary
+    log_assert (chunk.width <= chunk.object_width() - chunk.offset); // Basic sanity check
+    if (chunk.width < chunk.object_width() - chunk.offset) {
+      val = b->CreateZExtOrTrunc(val, llvmWidth(chunk.width, c));
+    }
+
+    // Remember it in case we need it again
+    valueCache.add(val, tmpDs);
+  }
+
+  // val now represents the slice of wire/port - now we may have to left-shift and/or
+  // zero-extend it to the final desired size.
+
+  if (offset == 0 && totalWidth == chunk.size()) {
+    return val;  // No padding needed
+  }
+
+  if (chunk.offset > 0) {
+    val = b->CreateShl(val, offset);
+  }
+
+  if (totalWidth > chunk.size() + offset) {
+    val = b->CreateZExtOrTrunc(val, llvmWidth(totalWidth, c));
+  }
+
+  // TODO: Is it worth adding this to the valueCache?  It would be necessary
+  // to create a relative complex temporary DriverSpec to serve as the key.
+
+  return val;
+}
 
 
 llvm::Value *generateValue(const DriverSpec& dSpec,
                            std::shared_ptr<llvm::LLVMContext> c,
                            std::shared_ptr<llvm::IRBuilder<>> b)
 {
+  llvm::Value *val = valueCache.find(dSpec);
+  if (val) {
+    return val;  // Should normally be the case for wires
+  }
+
   if (dSpec.is_wire()) {
     // An entire wire, representing a module input port.
-    // Their values should have been pre-created as function args.
-    llvm::Value *val = valueTable.find(dSpec);
-    if (val) {
-      return val;  // Should normally be the case
-    }
+    // Their values should have been pre-created as function args
+    // and already be in the valueCache.
     log_assert(false);
     return nullptr;
 
@@ -201,14 +403,16 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
     // An entire cell output.
     RTLIL::IdString portName;
     RTLIL::Cell *cell = dSpec.as_cell(portName);
-    return generateValue(cell, portName, c, b);
+    llvm::Value *val = generateCellOutputValue(cell, portName, c, b);
+    valueCache.add(val, dSpec);
+    return val;
 
   } else if (dSpec.is_fully_const()) {
     // valStr will be like "01101011010".
     std::string valStr = dSpec.as_const().as_string();
 
     // Ideally there would not be explicit 'x' values here!
-    // The optimizaiton and cleanup already done should have gotten rid of most of them.
+    // The optimization and cleanup already done should have gotten rid of most of them.
     if (!dSpec.is_fully_def()) {
       log_warning("x-ish driver spec found: %s\n", valStr.c_str());
 
@@ -218,7 +422,7 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
       }
     }
 
-    // Don't bother putting pure constants in the valueTable
+    // Don't bother putting pure constants in the valueCache
     return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), llvm::StringRef(valStr), 2 /*radix*/);
 
   } else {
@@ -229,15 +433,26 @@ llvm::Value *generateValue(const DriverSpec& dSpec,
     log_driverspec(dSpec);
 
 
-    std::Vector<llvm::Value*> values;
+    std::vector<llvm::Value*> values;
     int offset = 0;
     for (const DriverChunk& chunk : dSpec.chunks()) {
       log_driverchunk(chunk);
-      values.push_back(generateValue(chunk, offset, c, b);
-      offset += chunk->size();
+      values.push_back(generateValue(chunk, dSpec.size(), offset, c, b));
+      offset += chunk.size();
     }
 
-    return llvm::ConstantInt::get(llvmWidth(dSpec.size(), c), 123, false);  // TMP
+    // OR them all together
+    llvm::Value *val = nullptr;
+    for (llvm::Value* v : values) {
+      if (!val) {
+        val = v;
+      } else {
+        val = b->CreateOr(val, v);
+      }
+    }
+
+    valueCache.add(val, dSpec);
+    return val;
   }
 }
 
@@ -301,14 +516,14 @@ generateFunctionDecl(RTLIL::Module *mod, std::shared_ptr<llvm::Module> TheModule
                     "instr_"+destName, TheModule.get());
                     //destInfo.get_instr_name()+"_"+destSimpleName, TheModule.get());
 
-  // Set the function's arg's names, and add them to the valueTable
+  // Set the function's arg's names, and add them to the valueCache
   unsigned n = 0;
   for (const RTLIL::IdString& portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
     if (port->port_input) {
       llvm::Argument *arg = func->getArg(n);
       arg->setName(portname.str());
-      valueTable.add(arg, DriverSpec(port));
+      valueCache.add(arg, DriverSpec(port));
       n++;
     }
   }
@@ -384,7 +599,7 @@ void write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::stri
   output.close();
 
   finder.clear();  // Only becasue it is static
-  valueTable.clear();  // TODO make a proper class for this stuff
+  valueCache.clear();  // TODO make a proper class for this stuff
 
 }
 
