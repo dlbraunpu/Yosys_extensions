@@ -11,6 +11,7 @@ void my_log_sigbit(const Yosys::RTLIL::SigBit& bit);
 void my_log_wire(const Yosys::RTLIL::Wire *wire);
 
 // Doug: add "_#<cycle>" to the name
+Yosys::RTLIL::IdString cycleize_name(const char *name, int cycle);
 Yosys::RTLIL::IdString cycleize_name(Yosys::RTLIL::IdString object_name, int cycle);
 
 

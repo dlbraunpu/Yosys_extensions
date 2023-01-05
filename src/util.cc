@@ -39,7 +39,13 @@ void my_log_wire(const RTLIL::Wire *wire)
 // Doug: add "_#<cycle>" to the name
 IdString cycleize_name(IdString object_name, int cycle)
 {
-  return stringf("%s_#%d", object_name.c_str(), cycle);
+  return cycleize_name(object_name.c_str(), cycle);
+}
+
+// Doug: add "_#<cycle>" to the name
+IdString cycleize_name(const char *name, int cycle)
+{
+  return stringf("%s_#%d", name, cycle);
 }
 
 

@@ -475,7 +475,7 @@ LLVMWriter::generateDestValue(RTLIL::Wire *wire)
 
 
 llvm::Function*
-LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *destWire)
+LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *targetPort)
 {
   std::vector<llvm::Type *> argTy;
 
@@ -491,7 +491,7 @@ LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *destWire)
 
 
   // A return type of the correct width
-  llvm::Type* retTy = llvmWidth(destWire->width);
+  llvm::Type* retTy = llvmWidth(targetPort->width);
 
 
   llvm::FunctionType *functype =
@@ -499,7 +499,7 @@ LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *destWire)
 
 
   // Strip off the "\" from the wire name.
-  std::string destName = destWire->name.str().substr(1);
+  std::string destName = targetPort->name.str().substr(1);
 
   // Create the main function
   llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
@@ -527,8 +527,11 @@ LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *destWire)
 
 
 void
-LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, std::string destName, std::string llvmFileName)
+LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName,
+                          RTLIL::Wire *targetPort, std::string llvmFileName)
 {
+  assert(targetPort->port_output);
+
   reset();
 
   log("Building DriverFinder\n");
@@ -536,22 +539,14 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, st
   log("Built DriverFinder\n");
   log("%ld objects\n", finder.size());
 
+  // Strip off the "\" from the target port name.
+  std::string destName = targetPort->name.str().substr(1);
 
   c = std::make_unique<llvm::LLVMContext>();
   b = std::make_unique<llvm::IRBuilder<>>(*c);
   llvmMod = std::make_unique<llvm::Module>("mod_"+modName+"_"+destName, *c);
 
-  // Get the yosys RTLIL object representing the destination ASV.
-  // TODO: Map the original Verilog register name to the actual wire name.
-  std::string wireName = "\\" + destName + "_#1";
-  RTLIL::Wire *destWire = unrolledRtlMod->wire(wireName);
-  if (!destWire) {
-    log_error("Can't find wire for destination ASV %s\n", destName.c_str());
-    log_assert(false);
-  }
-  my_log_wire(destWire);
-
-  llvm::Function *func = generateFunctionDecl(unrolledRtlMod, destWire);
+  llvm::Function *func = generateFunctionDecl(unrolledRtlMod, targetPort);
 
   // basic block
   llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+destName, func);
@@ -562,7 +557,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName, st
 
   // Collect the drivers of each bit of the destination wire
   DriverSpec dSpec;
-  finder.buildDriverOf(destWire, dSpec);
+  finder.buildDriverOf(targetPort, dSpec);
 
   // Print what drives the bits of this wire
   log_driverspec(dSpec);

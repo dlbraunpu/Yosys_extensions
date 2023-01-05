@@ -50,16 +50,19 @@ USING_YOSYS_NAMESPACE
 
 bool verbose, noattr;
 
-// Doug
+// TODO: Put the functions and global vars below in a proper class.
 
-// Map registers in original module to copies smashed dest module, for a particular cycle
+// This maps registers in original module to copies in the smashed dest module,
+// for a particular cycle
 typedef dict<RTLIL::Cell*, RTLIL::Cell*> RegDict;
 
-// Map registers in original module to D or Q pin SigSpecs in smashed dest module, for a particular cycle.
-// The dict holds a copy of the SigSpec, which will still be valid after the register is the dest module is deleted.
+// This maps registers in original module to D or Q pin SigSpecs in smashed dest module, for
+// a particular cycle. The dict holds a copy of the SigSpec, which will still be valid
+// after the register in the dest module is deleted.
 typedef dict<RTLIL::Cell*, RTLIL::SigSpec> SigSpecDict;
 
 
+// Stuff inherited from the code of the write_verilog command.  Is it all needed?
 int auto_name_counter, auto_name_offset, auto_name_digits;
 std::map<RTLIL::IdString, int> auto_name_map;
 std::string auto_prefix, extmem_prefix;
@@ -69,6 +72,7 @@ dict<RTLIL::SigBit, RTLIL::State> active_initdata;
 SigMap active_sigmap;
 IdString initial_id;
 
+// Doug: this is inherited from the code of the write_verilog command.  
 void reset_auto_counter_id(RTLIL::IdString id, bool may_rename)
 {
   const char *str = id.c_str();
@@ -91,6 +95,7 @@ void reset_auto_counter_id(RTLIL::IdString id, bool may_rename)
     auto_name_offset = num + 1;
 }
 
+// Doug: this is inherited from the code of the write_verilog command.  
 void reset_auto_counter(RTLIL::Module *module)
 {
   auto_name_map.clear();
@@ -120,6 +125,8 @@ void reset_auto_counter(RTLIL::Module *module)
 }
 
 
+// Doug: this is inherited from the code of the write_verilog command.  It makes
+// a Verilog-legal name, which is not really necessary in our flow.
 std::string cleaned_id(RTLIL::IdString internal_id, bool may_rename = true)
 {
   const char *str = internal_id.c_str();
@@ -247,6 +254,10 @@ no_special_reg_name:
 
 
 // Doug: add "_#<cycle>" to the object's name, and ensure that it is unique.
+// Because of the uniquification, it is sort of dangerous to parse object names
+// to determine the cycle number they are associated with. TODO: Add a cycle
+// number attribute to critical objects (e.g. module ports)?
+
 template<class T>
 IdString map_name(RTLIL::Module *module, T *object, int cycle)
 {
@@ -275,9 +286,11 @@ void map_attributes(T *object, IdString orig_object_name)
   }
 }
 
-// Doug: This is vital, since we are effectively renaming wires: all the sigspecs on cell ports and connections
-// must be fixed up.
-void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &sig, RTLIL::Module *into = nullptr)
+
+// Doug: This is vital, since we are effectively renaming wires: all the sigspecs on
+// cell ports and connections must be fixed up.
+void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &sig,
+                 RTLIL::Module *into = nullptr)
 {
   vector<SigChunk> chunks = sig;
   for (auto &chunk : chunks)
@@ -287,6 +300,8 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 }
 
 
+// Copy the src module's objects into the dest module, renaming them
+// based on the given cycle number.  The given RegDict will be filled in.
 void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
                   int cycle, RegDict& registers)
 {
@@ -298,7 +313,8 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
 
   dict<IdString, IdString> memory_map;
   for (auto &src_memory_it : src->memories) {
-    RTLIL::Memory *new_memory = dest->addMemory(map_name(dest, src_memory_it.second, cycle), src_memory_it.second);
+    RTLIL::Memory *new_memory = dest->addMemory(map_name(dest, src_memory_it.second, cycle),
+                                                src_memory_it.second);
     map_attributes(new_memory, src_memory_it.second->name);
     memory_map[src_memory_it.first] = new_memory->name;
     design->select(dest, new_memory);
@@ -318,7 +334,8 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
 
   // There should not be any processes present - they shoud have already been converted to FFs
   for (auto &src_proc_it : src->processes) {
-    RTLIL::Process *new_proc = dest->addProcess(map_name(dest, src_proc_it.second, cycle), src_proc_it.second);
+    RTLIL::Process *new_proc = dest->addProcess(map_name(dest, src_proc_it.second, cycle),
+                                                src_proc_it.second);
     map_attributes(new_proc, src_proc_it.second->name);
     for (auto new_proc_sync : new_proc->syncs)
       for (auto &memwr_action : new_proc_sync->mem_write_actions)
@@ -353,7 +370,8 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
     }
   }
 
-  dest->fixup_ports();  // Give the new ports proper port IDs.  (Could be done once, after all cycles are smashed?)
+  // Give the new ports proper port IDs.  (Could be done once, after all cycles are smashed?)
+  dest->fixup_ports();
 
   for (auto &src_conn_it : src->connections()) {
     RTLIL::SigSig new_conn = src_conn_it;
@@ -365,13 +383,14 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
 }
 
 
+// Add the logic needed to model a FF's SRST signal.
 void wire_up_srst(RTLIL::Module* mod, FfData& ff,
                   RTLIL::SigSpec& d_fanin, RTLIL::SigSpec& q_fanout)
 {
   log_debug("Wire up srst\n");
   // To model the reset, add an inverter and an AND gate between D and Q
   // Negative resets don't need the inverter.
-  RTLIL::Cell *and_gate = mod->addCell(mod->uniquify("$srst_and"), ID($and));
+  RTLIL::Cell *and_gate = mod->addCell(mod->uniquify(ff.name.str()+"_srst_and"), ID($and));
   log_debug("Adding srst AND %s\n", and_gate->name.c_str());
   and_gate->setParam(ID::A_WIDTH, ff.width);
   and_gate->setParam(ID::B_WIDTH, ff.width);
@@ -384,7 +403,7 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
 
   if (ff.pol_srst) {
     // Positive reset needs an inverter
-    RTLIL::Cell *inv = mod->addCell(mod->uniquify("$srst_inv"), ID($not));
+    RTLIL::Cell *inv = mod->addCell(mod->uniquify(ff.name.str()+"_srst_inv"), ID($not));
     log_debug("Adding srst inverter %s\n", inv->name.c_str());
     inv->setParam(ID::A_WIDTH, 1);
     inv->setParam(ID::Y_WIDTH, 1);
@@ -394,7 +413,7 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
     inv->setPort(ID::A, ff.sig_srst);
 
     // Add a wire to connect the inverter and AND gate
-    RTLIL::Wire *w_inv = mod->addWire(mod->uniquify("$srst_inv"), 1);
+    RTLIL::Wire *w_inv = mod->addWire(mod->uniquify(ff.name.str()+"_srst_inv"), 1);
 
     // Wire connects inverter output to AND gate B input
     inv->setPort(ID::Y, w_inv);
@@ -420,7 +439,7 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
   // Lastly we need a stub wire from the AND gate output which
   // will send the signal to the next cycle
 
-  RTLIL::Wire *w_d = mod->addWire(mod->uniquify("$gated_d"), ff.width);
+  RTLIL::Wire *w_d = mod->addWire(mod->uniquify(ff.name.str()+"_gated_d"), ff.width);
   and_gate->setPort(ID::Y, w_d);
 
   // Return the modified D and Q connections to the caller.
@@ -429,13 +448,14 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
 }
 
 
+// Add the logic needed to model a FF's CE signal.
 void wire_up_ce(RTLIL::Module* mod, FfData& ff,
                   RTLIL::SigSpec& d_fanin, RTLIL::SigSpec& q_fanout)
 {
   log_debug("Wire up ce\n");
   // To model the enable, add a mux between D and Q
   // Keep in mind the ce signal polarity
-  RTLIL::Cell *mux = mod->addCell(mod->uniquify("$ce_mux"), ID($mux));
+  RTLIL::Cell *mux = mod->addCell(mod->uniquify(ff.name.str()+"_ce_mux"), ID($mux));
   log_debug("Adding srst mux %s\n", mux->name.c_str());
   mux->setParam(ID::WIDTH, ff.width);
 
@@ -454,7 +474,7 @@ void wire_up_ce(RTLIL::Module* mod, FfData& ff,
   // Lastly we need a stub wire from the mux output which
   // will send the signal to the next cycle
 
-  RTLIL::Wire *w_d = mod->addWire(mod->uniquify("$muxed_d"), ff.width);
+  RTLIL::Wire *w_d = mod->addWire(mod->uniquify(ff.name.str()+"_muxed_d"), ff.width);
   mux->setPort(ID::Y, w_d);
 
   // Return the modified D and Q connections to the caller.
@@ -463,11 +483,12 @@ void wire_up_ce(RTLIL::Module* mod, FfData& ff,
 }
 
 
-// Replace the given FF cell:
+// Replace the given FF cell.
 // The signal driving the D pin is returned in d_fanin.
-// The signal driven by the Q pin is returned in q_fanout
-// An enable pin is converted into a mux that feeds q_fanout directly from d_fanin, and
-// a sync reset becomes an AND gate feeding q_fanout.
+// The signal driven by the Q pin is returned in q_fanout.
+// Simple FFs can basically go away, but an enable pin must be converted
+// into a mux that feeds q_fanout directly from d_fanin, and
+// a sync reset must become an AND gate feeding q_fanout.
 
 bool split_ff(RTLIL::Cell *cell,
                RTLIL::SigSpec& d_fanin, RTLIL::SigSpec& q_fanout)
@@ -483,7 +504,8 @@ bool split_ff(RTLIL::Cell *cell,
 
 
   std::string reg_name = cellname(cell);
-  log_debug("\nSplitting FF cell '%s' known to some as '%s'.  Width %d\n", cell->name.c_str(), reg_name.c_str(), ff.width);
+  log_debug("\nSplitting FF cell '%s' known to some as '%s'.  Width %d\n",
+            cell->name.c_str(), reg_name.c_str(), ff.width);
 
   // $ff / $_FF_ cell: not supported.
   if (ff.has_gclk) {
@@ -592,13 +614,19 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
     SigSpecDict d_fanins1;
     SigSpecDict q_fanouts1;
 
-    // We unroll backwards in time.  The data flow is from cycle <num_cycles> to cycle 1.
-    for (int cycle = 1; cycle <= num_cycles; ++cycle) {
+    // We unroll backwards in time, but unlike the original
+    // func_extract program, the cycles are numbered forwards in time.
+    // The data flow is from cycle 1 to cycle <num_cycles>,
+    // Ultimately the current ASV values will be fed into the
+    // input ports associated with cycle 1, and the new ASV value
+    // will be available at an output port associated with cycle <num_cycles>.
+    for (int cycle = num_cycles; cycle >= 1; --cycle) {
 
       RegDict cur_cycle_regs;
 
       smash_module(destmod, srcmod, sigmap, cycle, cur_cycle_regs);
 
+      // For efficiency we use pairs of SigSpecDicts, which alternate roles.
       SigSpecDict& prev_cycle_q_fanouts = (cycle&0x01) ? q_fanouts0 : q_fanouts1;
 
       SigSpecDict& cur_cycle_d_fanins = (cycle&0x01) ? d_fanins1 : d_fanins0;
@@ -606,7 +634,6 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
 
       cur_cycle_d_fanins.clear();
       cur_cycle_q_fanouts.clear();
-
 
       for (auto pair : cur_cycle_regs) {
         RTLIL::SigSpec d_fanin;
@@ -623,36 +650,43 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
         RTLIL::SigSpec& prev_cycle_q_fanout = prev_cycle_q_fanouts[orig_reg];
 
 
-        if (cycle > 1) {
-          // Connect the current cycle's d_fanin signal to the previously-created cycle's q_fanout signal.
+        if (cycle < num_cycles) {
+          // Connect the current cycle's d_fanin (output) signal to the previously-created
+          // cycle's q_fanout (input) signal.
           // Remember: the previously-created cycle is the next cycle in time!
-          // The cycles are numbered backwards in time.
+          // The cycles are numbered forwards in time.
           join_sigs(destmod, d_fanin, prev_cycle_q_fanout);
         }
 
-        // Make every cycle's d_fanin signal an output port
-        // If the sigspec specifies more than one wire, things are tricky.
-        // To fix that, we may need to add an extra wire.
-        // TODO: the port needs to have a hdlname attribute or something similar to identify the 
-        // original Verilog register.  The wire name is not helpful for this: it may barely resemble
-        // the original register name.
-        log("first cycle output port: ");
-        my_log_sigspec(d_fanin);
-        if (d_fanin.is_wire()) {
-          d_fanin.as_wire()->port_output = true;
-        } else {
-          log_warning("output signal is not a single wire!\n");
+        if (cycle == num_cycles) {
+          // TODO: Do this only for registers representing ASVs.
+          // Make the final cycle's d_fanin signal an output port
+          // If the sigspec specifies more than one wire, things are tricky.
+          // To fix that, we may need to add an extra wire.
+          // TODO: the port needs to have a hdlname attribute or something similar to identify the 
+          // original Verilog register.  The wire name is not helpful for this: it may barely resemble
+          // the original register name.
+          log("final cycle output port: ");
+          my_log_sigspec(d_fanin);
+          if (d_fanin.is_wire()) {
+            d_fanin.as_wire()->port_output = true;
+          } else {
+            log_warning("output signal is not a single wire!\n");
+          }
         }
 
-        if (cycle == num_cycles) {
+        if (cycle == 1) {
           // Make the starting cycle's q_fanout signal an input port
           // If the register was originally driven by an input port, 
           // the signal will still be an input port for every cycle.
           // If the sigspec specifies more than one wire, things are tricky.
           // To fix that, we may need to add an extra wire.
-          // TODO: the port needs to have a hdlname attribute or something similar to identify the 
-          // original Verilog register.  The wire name is not helpful for this.
-          log("final cycle input port: ");
+          // TODO: the port needs to have a hdlname attribute or something
+          // similar to identify the  original Verilog register.  The wire name
+          // is not helpful for this.
+          // BTW, the ports for non-ASVs will typically get a reset value put
+          // on them, and then will get optimized away.
+          log("cycle #1 input port: ");
           my_log_sigspec(q_fanout);
           if (q_fanout.is_wire()) {
             q_fanout.as_wire()->port_input = true;

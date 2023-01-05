@@ -151,8 +151,10 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
     const std::vector<std::string>& values = pair.second;
     log_debug("Input variable: %s\n", inputName.c_str());
 
-    // Map the instr.txt cycle numbering to the unrolled RTL cycle numbering.
-    int cycle = cycles;
+    // Unlike the original funct_extract program, the unrolled RTL cycle
+    // numbering matches the instr.txt cycle numbering:
+    // starting at 1, and increasing in time.
+    int cycle = 1;
     for (const std::string& valStr : values) {
 
       RTLIL::SigSpec ss;
@@ -180,9 +182,7 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
 
       applyPortSignal(port, ss, true /*deleteDeadPort*/);
 
-
-
-      cycle--;
+      cycle++;
     }
   }
 }
@@ -215,6 +215,8 @@ struct DougSmashCmd : public Pass {
 
     verbose = false;
     noattr = false;
+    bool write_llvm = true;
+    bool do_opto = true;
 
     if (args.size() < 4) {
       log_error("Not enough arguments!\n");
@@ -233,7 +235,15 @@ struct DougSmashCmd : public Pass {
         continue;
       }
       if (arg == "-v") {
-        verbose = true;
+        verbose = true;  // TODO: replace with existing Yosys debug mechanism
+        continue;
+      }
+      if (arg == "-no_write_llvm") {
+        write_llvm = false;
+        continue;
+      }
+      if (arg == "-no_opto") {
+        do_opto = false;
         continue;
       }
       if (arg == "-path") {
@@ -315,13 +325,15 @@ struct DougSmashCmd : public Pass {
     log("Unrolling module `%s' into `%s' for num_cycles=%d...\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
     unroll_module(srcmod, destmod, num_cycles);
 
-    // Optimize
-    log("Optimizing...\n");
-    log_push();
-    Pass::call_on_module(design, destmod, "stat");
-    Pass::call_on_module(design, destmod, "opt");
-    Pass::call_on_module(design, destmod, "stat");
-    log_pop();
+    if (do_opto) {
+      // Optimize
+      log("Optimizing...\n");
+      log_push();
+      Pass::call_on_module(design, destmod, "stat");
+      Pass::call_on_module(design, destmod, "opt");
+      Pass::call_on_module(design, destmod, "stat");
+      log_pop();
+    }
 
     log("Applying instruction encoding...\n");
     applyInstrEncoding(destmod, instrInfo->instrEncoding, num_cycles);
@@ -336,7 +348,7 @@ struct DougSmashCmd : public Pass {
       if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
         tmpnam = "\\" + tmpnam;
       }
-      RTLIL::IdString portname = cycleize_name(tmpnam, num_cycles);
+      RTLIL::IdString portname = cycleize_name(tmpnam, 1);
       RTLIL::Wire *port = destmod->wire(portname);
       if (!port || !port->port_input) {
         log_error("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());
@@ -360,18 +372,35 @@ struct DougSmashCmd : public Pass {
     destmod->fixup_ports();  // Necessary since we added and removed ports
 
     // Re-optimize
-    log("Re-optimizing...\n");
-    log_push();
-    Pass::call_on_module(design, destmod, "stat");
-    Pass::call_on_module(design, destmod, "opt");
-    Pass::call_on_module(design, destmod, "stat");
-    log_pop();
+    if (do_opto) {
+      log("Re-optimizing...\n");
+      log_push();
+      Pass::call_on_module(design, destmod, "stat");
+      Pass::call_on_module(design, destmod, "opt");
+      Pass::call_on_module(design, destmod, "stat");
+      log_pop();
+    }
 
     log_header(design, "Writing LLVM data...\n");
-    //targetName = "$0\\FAC1[95:0]";  // TODO: need to map from original Verilog reg name to cycle #0 output name
 
-    LLVMWriter writer;
-    writer.write_llvm_ir(destmod, "xxx"/*module name*/, targetName, "xxx.llvm" /*output file name*/);
+    // Get the Yosys RTLIL object representing the destination ASV.
+    // TODO: Do a better job of mapping the original Verilog register name to the actual wire name.
+    std::string portName = "\\" + targetName + "_#" + std::to_string(num_cycles);
+    RTLIL::Wire *targetPort = destmod->wire(portName);
+
+    if (!targetPort) {
+      log_error("Can't find output port wire for destination ASV %s\n", targetName.c_str());
+      log_assert(false);
+    }
+
+    my_log_wire(targetPort);
+
+
+    if (write_llvm) {
+      LLVMWriter writer;
+      writer.write_llvm_ir(destmod, "xxx"/*module name*/, targetPort, "xxx.llvm" /*output file name*/);
+    }
+
   }
 } DougSmashCmd;
 

@@ -82,8 +82,7 @@ private:
 
 
   llvm::Function*
-  generateFunctionDecl(Yosys::RTLIL::Module *mod,
-                             Yosys::RTLIL::Wire *destWire);
+  generateFunctionDecl(Yosys::RTLIL::Module *mod, Yosys::RTLIL::Wire *targetPort);
 
 
 public:
@@ -91,7 +90,7 @@ public:
   ~LLVMWriter();
 
   void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
-                     std::string modName, std::string destName,
+                     std::string modName, Yosys::RTLIL::Wire *targetPort,
                      std::string llvmFileName);
 
   void reset();
