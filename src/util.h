@@ -5,10 +5,12 @@
 
 
 void my_log_sigspec(const Yosys::RTLIL::SigSpec& sig);
-
 void my_log_sigbit(const Yosys::RTLIL::SigBit& bit);
-
 void my_log_wire(const Yosys::RTLIL::Wire *wire);
+
+void my_log_debug_sigspec(const Yosys::RTLIL::SigSpec& sig);
+void my_log_debug_sigbit(const Yosys::RTLIL::SigBit& bit);
+void my_log_debug_wire(const Yosys::RTLIL::Wire *wire);
 
 // Doug: add "_#<cycle>" to the name
 Yosys::RTLIL::IdString cycleize_name(const char *name, int cycle);

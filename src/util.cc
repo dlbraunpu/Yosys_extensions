@@ -16,6 +16,11 @@ void my_log_sigspec(const RTLIL::SigSpec& sig)
   log("sigspec: %s\n", buf.str().c_str());
 }
 
+void my_log_debug_sigspec(const RTLIL::SigSpec& sig)
+{
+  if (ys_debug()) my_log_sigspec(sig);
+}
+
 
 
 void my_log_sigbit(const RTLIL::SigBit& bit)
@@ -27,12 +32,22 @@ void my_log_sigbit(const RTLIL::SigBit& bit)
   }
 }
 
+void my_log_debug_sigbit(const RTLIL::SigBit& bit)
+{
+  if (ys_debug()) my_log_sigbit(bit);
+}
+
 
 void my_log_wire(const RTLIL::Wire *wire)
 {
   log("wire %s  width %d  start_offset %d  port_id %d  input %d  output %d\n", wire->name.c_str(),
       wire->width, wire->start_offset, wire->port_id, wire->port_input, wire->port_output);
 
+}
+
+void my_log_debug_wire(const RTLIL::Wire *wire)
+{
+  if (ys_debug()) my_log_wire(wire);
 }
 
 
