@@ -381,24 +381,24 @@ struct DougSmashCmd : public Pass {
       log_pop();
     }
 
-    log_header(design, "Writing LLVM data...\n");
-
     // Get the Yosys RTLIL object representing the destination ASV.
     // TODO: Do a better job of mapping the original Verilog register name to the actual wire name.
-    std::string portName = "\\" + targetName + "_#" + std::to_string(num_cycles);
+    std::string portName = "\\" + targetName + "_#final";
     RTLIL::Wire *targetPort = destmod->wire(portName);
 
     if (!targetPort) {
       log_error("Can't find output port wire for destination ASV %s\n", targetName.c_str());
-      log_assert(false);
+    } else {
+      my_log_wire(targetPort);
     }
 
-    my_log_wire(targetPort);
+    if (targetPort && write_llvm) {
+      log_header(design, "Writing LLVM data...\n");
 
-
-    if (write_llvm) {
       LLVMWriter writer;
       writer.write_llvm_ir(destmod, "xxx"/*module name*/, targetPort, "xxx.llvm" /*output file name*/);
+    } else {
+      log_warning("LLVM generation skipped.\n");
     }
 
   }

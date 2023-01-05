@@ -69,18 +69,35 @@ LLVMWriter::llvmZero(unsigned width)
 }
 
 
-void LLVMWriter::ValueCache::add(llvm::Value*value, const DriverSpec& driver)
+void
+LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
 {
+  log("adding value for driverspec:\n");
+  log_driverspec(driver);
+  value->dump();
+  log_flush();
+
   log_assert (_dict.find(driver) == _dict.end());  // Not already there
   _dict[driver] = value;
 }
 
-llvm::Value *LLVMWriter::ValueCache::find(const DriverSpec& driver)
+
+llvm::Value *
+LLVMWriter::ValueCache::find(const DriverSpec& driver)
 {
+  log("looking up driverspec:\n");
+  log_driverspec(driver);
+
   auto pos = _dict.find(driver);
   if (pos == _dict.end())  {
+    log("not there\n");
+    log_flush();
     return nullptr;
   }
+  log("found Value:\n");
+  pos->second->dump();
+  log_flush();
+
   return pos->second;
 }
 
@@ -113,6 +130,8 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
   size_t numConns = cell->connections().size();
 
   log("generateCellOutputValue(): cell port %s %s  width %d:\n", cell->name.c_str(), port.c_str(), cell->getPort(port).size());
+  log_flush();
+
   log_assert(cell->output(port));
 
   // TODO: If \A or \B widths are bigger than their connections, zero
@@ -137,6 +156,8 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
   // A different case for each possible cell type (unary, binary, and muxes).
 
   if (numConns == 2) {
+    log("generateCellOutputValue(): got input for 1-input cell port %s\n", cell->name.c_str());
+    log_flush();
 
     // A unary operator. 
     // TODO: Sanity check: pin widths match driver/load widths.
@@ -189,9 +210,11 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
   unsigned widthB = valB->getType()->getIntegerBitWidth();
 
   if (numConns == 3) {
+    log("generateCellOutputValue(): got inputs for 2-input cell port %s\n", cell->name.c_str());
+    log_flush();
 
-    log_assert(widthY == widthA || widthY == 1);
     log_assert(widthA == widthB);
+    log_assert(widthY == widthA || widthY == 1);
 
     if (cell->type == "$and") {
       return b->CreateAnd(valA, valB);
@@ -257,6 +280,9 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
 
   if (numConns == 4) {
     // Muxes
+    log("generateCellOutputValue(): got input for 3-input cell port %s\n", cell->name.c_str());
+    log_flush();
+
     log_assert(widthY == widthA);
     log_assert(widthA == widthB);
     log_assert(widthS == 1);
@@ -329,18 +355,16 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
   // OK, we have a slice of a wire or cell output.
 
   // See if we already have a Value for this object slice
-  DriverSpec tmpDs(chunk);
-  llvm::Value *val = valueCache.find(tmpDs);
+  DriverSpec tmpDs1(chunk);
+  llvm::Value *val = valueCache.find(tmpDs1);
 
   if (!val) {
     // If not, we have to generate it.
     // Find or make a Value for the entire wire or cell output
-    tmpDs = chunk.wire ? DriverSpec(chunk.wire) : DriverSpec(chunk.cell, chunk.port);
-    log_assert(tmpDs.is_cell() || tmpDs.is_wire());
-    val = valueCache.find(tmpDs);
-    if (!val) {
-      val = generateValue(tmpDs);
-    }
+    DriverSpec tmpDs2 = chunk.wire ? DriverSpec(chunk.wire) : DriverSpec(chunk.cell, chunk.port);
+    log_assert(tmpDs2.is_cell() || tmpDs2.is_wire());
+
+    val = generateValue(tmpDs2);
 
     // Right-shift the value if necessary
     if (chunk.offset > 0) {
@@ -349,12 +373,12 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
 
     // Truncate the value if necessary
     log_assert (chunk.width <= chunk.object_width() - chunk.offset); // Basic sanity check
-    if (chunk.width < chunk.object_width() - chunk.offset) {
+    if ((unsigned)chunk.width != val->getType()->getIntegerBitWidth()) {
       val = b->CreateZExtOrTrunc(val, llvmWidth(chunk.width));
     }
 
     // Remember it in case we need it again
-    valueCache.add(val, tmpDs);
+    valueCache.add(val, tmpDs1);
   }
 
   // val now represents the slice of wire/port - now we may have to left-shift and/or
@@ -368,7 +392,7 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
     val = b->CreateShl(val, offset);
   }
 
-  if (totalWidth > chunk.size() + offset) {
+  if ((unsigned)totalWidth != val->getType()->getIntegerBitWidth()) {
     val = b->CreateZExtOrTrunc(val, llvmWidth(totalWidth));
   }
 
@@ -436,7 +460,11 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
       offset += chunk.size();
     }
 
-    // OR them all together
+    if (values.size() == 1) {
+      return values[0];  // A single chunk (already added to valueCache).
+    }
+
+    // Multiple chunks: OR them all together
     llvm::Value *val = nullptr;
     for (llvm::Value* v : values) {
       if (!val) {
@@ -554,6 +582,8 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName,
 
   // All the real work happens here 
 
+  log("Destination port:\n");
+  my_log_wire(targetPort);
 
   // Collect the drivers of each bit of the destination wire
   DriverSpec dSpec;

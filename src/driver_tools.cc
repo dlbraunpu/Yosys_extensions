@@ -1698,6 +1698,7 @@ void log_driverchunk(const DriverChunk &chunk, bool autoint)
   std::stringstream buf;
   dump_driverchunk(buf, chunk, autoint);
   log("driver chunk: %s\n", buf.str().c_str());
+  log_flush();
 }
 
 
@@ -1707,4 +1708,5 @@ void log_driverspec(const DriverSpec &driver, bool autoint)
   std::stringstream buf;
   dump_driverspec(buf, driver, autoint);
   log("driver spec: %s\n", buf.str().c_str());
+  log_flush();
 }
