@@ -58,6 +58,12 @@ private:
                              const Yosys::RTLIL::IdString& port);
 
 
+  // Helpers for generateCellOutputValue() below
+  llvm::Value *generateUnaryCellOutputValue(Yosys::RTLIL::Cell *cell);
+  llvm::Value *generateBinaryCellOutputValue(Yosys::RTLIL::Cell *cell);
+  llvm::Value *generateMuxCellOutputValue(Yosys::RTLIL::Cell *cell);
+  llvm::Value *generatePmuxCellOutputValue(Yosys::RTLIL::Cell *cell);
+
 
   // Create a Value representing the output port of the given cell.
   // Since this is not given a DriverSpec, it does not touch the valueCache.

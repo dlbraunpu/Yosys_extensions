@@ -225,6 +225,24 @@ int DriverChunk::object_width() const
 }
 
 
+// Only works for data
+std::string DriverChunk::as_string() const
+{
+  log_assert(is_data());
+
+  std::string ret;
+  ret.reserve(data.size());
+  for (size_t i = data.size(); i > 0; i--)
+    switch (data[i-1]) {
+      case RTLIL::State::S0: ret += "0"; break;
+      case RTLIL::State::S1: ret += "1"; break;
+      case RTLIL::State::Sx: ret += "x"; break;
+      case RTLIL::State::Sz: ret += "z"; break;
+      case RTLIL::State::Sa: ret += "-"; break;
+      case RTLIL::State::Sm: ret += "m"; break;
+    }
+  return ret;
+}
 
 DriverSpec::DriverSpec()
 {
@@ -1325,7 +1343,7 @@ std::string DriverSpec::as_string() const
 		if (chunk.is_object())
 			str.append(chunk.width, '?');
 		else
-			str += RTLIL::Const(chunk.data).as_string();
+			str += chunk.as_string();
 	}
 	return str;
 }
