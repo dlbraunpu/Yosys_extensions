@@ -72,12 +72,19 @@ LLVMWriter::llvmZero(unsigned width)
 void
 LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
 {
-  log("adding value for driverspec:\n");
-  log_driverspec(driver);
-  value->dump();
-  log_flush();
 
-  log_assert(_dict.find(driver) == _dict.end());  // Not already there
+  if (_dict.find(driver) != _dict.end()) {
+    // Already there
+    log_warning("Repeated addition of Value for driverspec:\n");
+    log_driverspec(driver);
+    log("existing Value %p:\n", _dict[driver]);
+    _dict[driver]->dump();
+    log("new Value %p:\n", value);
+    value->dump();
+    log_flush();
+    return;
+  }
+
   _dict[driver] = value;
 }
 
@@ -85,19 +92,10 @@ LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
 llvm::Value *
 LLVMWriter::ValueCache::find(const DriverSpec& driver)
 {
-  log("looking up driverspec:\n");
-  log_driverspec(driver);
-
   auto pos = _dict.find(driver);
   if (pos == _dict.end())  {
-    log("not there\n");
-    log_flush();
     return nullptr;
   }
-  log("found Value:\n");
-  pos->second->dump();
-  log_flush();
-
   return pos->second;
 }
 
@@ -116,6 +114,29 @@ LLVMWriter::generateInputValue(RTLIL::Cell *cell, const RTLIL::IdString& port)
   return generateValue(dSpec);
 }
 
+
+
+// Return true if the given celltype
+// is a redution operator: it returns a single-bit output.
+static bool
+isReductionCell(RTLIL::IdString celltype)
+{
+  return celltype.in(
+            ID($reduce_and),
+            ID($reduce_or),
+            ID($reduce_bool),
+            ID($reduce_xor),
+            ID($reduce_xnor),
+            ID($logic_not),
+            ID($logic_and),
+            ID($logic_or),
+            ID($lt),
+            ID($le),
+            ID($eq),
+            ID($ne),
+            ID($ge),
+            ID($gt));
+}
 
 
 // Create a Value representing the Y output port of the given cell.
@@ -149,6 +170,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
   unsigned valWidthA = valA->getType()->getIntegerBitWidth();
 
+  bool isReduce = isReductionCell(cell->type);
 
   // TODO: Sanity check: pin widths match driver/load widths.
   // Also that reduce cells have output width of 1.
@@ -163,17 +185,23 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   // BTW, SigSpecs do not have any information about signed-ness.
   log_assert(valWidthA == cellWidthA);
 
-  if (cell->type == "$not") {
+  if (isReduce && cellWidthY != 1) {
+    log_warning("Oversize Y width for reduction %s cell %s\n",
+                cell->type.c_str(), cell->name.c_str());
+    log_flush();
+  }
+
+  if (cell->type == ID($not)) {
     return b->CreateNot(valA);
-  } else if (cell->type == "$pos") {
+  } else if (cell->type == ID($pos)) {
     return valA;
-  } else if (cell->type == "$neg") {
+  } else if (cell->type == ID($neg)) {
     return b->CreateNeg(valA);
-  } else if (cell->type == "$reduce_and") {
+  } else if (cell->type == ID($reduce_and)) {
     return b->CreateICmpEQ(b->CreateNot(valA), llvmZero(valWidthA));
-  } else if (cell->type == "$reduce_or" || cell->type == "$reduce_bool") {
+  } else if (cell->type == ID($reduce_or) || cell->type == ID($reduce_bool)) {
     return b->CreateICmpNE(valA, llvmZero(valWidthA));
-  } else if (cell->type == "$reduce_xor") {
+  } else if (cell->type == ID($reduce_xor)) {
     // A trickier operation: XOR, a parity calculation.
     // Need to declare and use the llvm.ctpop intrinsic function.
     std::vector<llvm::Type *> arg_type;
@@ -181,14 +209,14 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod.get(), llvm::Intrinsic::ctpop, arg_type);
     llvm::Value *popcnt = b->CreateCall(fun, valA);
     return b->CreateTrunc(popcnt, llvmWidth(1));  // Return low-order bit
-  } else if (cell->type == "$reduce_xnor") {
+  } else if (cell->type == ID($reduce_xnor)) {
     // Same as reduce_xor, plus invert.
     std::vector<llvm::Type *> arg_type;
     arg_type.push_back(llvmWidth(valWidthA));
     llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod.get(), llvm::Intrinsic::ctpop, arg_type);
     llvm::Value *popcnt = b->CreateCall(fun, valA);
     return b->CreateNot(b->CreateTrunc(popcnt, llvmWidth(1)));  // Return inverted low-order bit
-  } else if (cell->type == "$logic_not") {
+  } else if (cell->type == ID($logic_not)) {
     return b->CreateICmpEQ(valA, llvmZero(valWidthA));
   } 
 
@@ -232,6 +260,7 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   llvm::Value *valB = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
   unsigned valWidthB = valB->getType()->getIntegerBitWidth();
 
+  bool isReduce = isReductionCell(cell->type);
 
   // TODO: Sanity check: pin widths match driver/load widths.
   // Also that reduce cells have output width of 1.
@@ -247,11 +276,18 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
     log_flush();
   }
 
-  if (cellWidthY != cellWidthA) {
+  if (!isReduce && cellWidthY != cellWidthA) {
     log_warning("Mismatched A/Y widths for %s cell %s\n",
                 cell->type.c_str(), cell->name.c_str());
     log_flush();
   }
+
+  if (isReduce && cellWidthY != 1) {
+    log_warning("Oversize Y width for reduction %s cell %s\n",
+                cell->type.c_str(), cell->name.c_str());
+    log_flush();
+  }
+
 
   // Normalize the actual A/B/Y width to the largest of the cell and Value widths.
   // Presumably the width of an input pin's Value was correctly set when it
@@ -273,52 +309,52 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   log_assert(valWidthA == workingWidth);
   log_assert(valWidthB == workingWidth);
 
-  if (cell->type == "$and") {
+  if (cell->type == ID($and)) {
     return b->CreateAnd(valA, valB);
-  } else if (cell->type == "$or") {
+  } else if (cell->type == ID($or)) {
     return b->CreateOr(valA, valB);
-  } else if (cell->type == "$xor") {
+  } else if (cell->type == ID($xor)) {
     return b->CreateXor(valA, valB);
-  } else if (cell->type == "$xnor") {
+  } else if (cell->type == ID($xnor)) {
     return b->CreateNot(b->CreateXor(valA, valB));
-  } else if (cell->type == "$shl") {
+  } else if (cell->type == ID($shl)) {
     return b->CreateShl(valA, valB);
-  } else if (cell->type == "$shr") {
+  } else if (cell->type == ID($shr)) {
     return b->CreateLShr(valA, valB);
-  } else if (cell->type == "$sshl") {
+  } else if (cell->type == ID($sshl)) {
     return b->CreateShl(valA, valB);  // Same as $shl
-  } else if (cell->type == "$sshr") {
+  } else if (cell->type == ID($sshr)) {
     return b->CreateAShr(valA, valB);
-  } else if (cell->type == "$logic_and") {
+  } else if (cell->type == ID($logic_and)) {
     return b->CreateAnd(b->CreateICmpNE(valA, llvmZero(valWidthA)),
                         b->CreateICmpNE(valB, llvmZero(valWidthB)));
-  } else if (cell->type == "$logic_or") {
+  } else if (cell->type == ID($logic_or)) {
     return b->CreateOr(b->CreateICmpNE(valA, llvmZero(valWidthA)),
                         b->CreateICmpNE(valB, llvmZero(valWidthB)));
 
     // TODO: $eqx, etc.  $pos
 
-  } else if (cell->type == "$lt") {
+  } else if (cell->type == ID($lt)) {
     return b->CreateICmpULT(valA, valB);
-  } else if (cell->type == "$le") {
+  } else if (cell->type == ID($le)) {
     return b->CreateICmpULE(valA, valB);
-  } else if (cell->type == "$eq") {
+  } else if (cell->type == ID($eq)) {
     return b->CreateICmpEQ(valA, valB);
-  } else if (cell->type == "$ne") {
+  } else if (cell->type == ID($ne)) {
     return b->CreateICmpNE(valA, valB);
-  } else if (cell->type == "$ge") {
+  } else if (cell->type == ID($ge)) {
     return b->CreateICmpUGE(valA, valB);
-  } else if (cell->type == "$gt") {
+  } else if (cell->type == ID($gt)) {
     return b->CreateICmpUGT(valA, valB);
-  } else if (cell->type == "$add") {
+  } else if (cell->type == ID($add)) {
     return b->CreateAdd(valA, valB);
-  } else if (cell->type == "$sub") {
+  } else if (cell->type == ID($sub)) {
     return b->CreateSub(valA, valB);
-  } else if (cell->type == "$mul") {
+  } else if (cell->type == ID($mul)) {
     return b->CreateMul(valA, valB);
-  } else if (cell->type == "$div") {
+  } else if (cell->type == ID($div)) {
     return b->CreateUDiv(valA, valB);  // Needs work?
-  } else if (cell->type == "$mod") {
+  } else if (cell->type == ID($mod)) {
     return b->CreateUDiv(valA, valB);
 
     // TODO: $shift and $shiftx, $divfloor, etc.
@@ -339,7 +375,7 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
       cell->name.c_str(), cell->getPort(ID::Y).size());
   log_flush();
 
-  log_assert(cell->type == "$mux");
+  log_assert(cell->type == ID($mux));
 
   // See the above rant on widths...
   // Muxes have only WIDTH attribute, applies to A/B/Y
@@ -394,7 +430,7 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
        cell->getPort(ID::S).size());
   log_flush();
 
-  log_assert(cell->type == "$pmux");
+  log_assert(cell->type == ID($pmux));
 
   // See the above rant on widths...
 
@@ -441,6 +477,10 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
   // BTW, SigSpecs do not have any information about signed-ness
 
   log_warning("Unsupported pmux cell %s\n", cell->name.c_str());
+  log("A:\n%s\n", log_signal(cell->getPort(ID::A)));
+  log("B:\n%s\n", log_signal(cell->getPort(ID::B)));
+  log("S:\n%s\n", log_signal(cell->getPort(ID::S)));
+  log_flush();
   return valA;
 }
 
@@ -453,9 +493,10 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& port)
 {
+  RTLIL::SigSpec outputSig = cell->getPort(ID::Y);
 
   log("generateCellOutputValue(): cell port %s Y  width %d:\n",
-      cell->name.c_str(), cell->getPort(ID::Y).size());
+      cell->name.c_str(), outputSig.size());
   log_flush();
 
   // Here we handle only builtin cells.
@@ -467,25 +508,44 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
   log_assert(port == ID::Y);
   log_assert(cell->output(port));
 
+  llvm::Value *val = nullptr;
+
   size_t numConns = cell->connections().size();
   switch (numConns) {
-    case 2: return generateUnaryCellOutputValue(cell);
-    case 3: return generateBinaryCellOutputValue(cell);
-    case 4: if (cell->type == "$mux") {
-              return generateMuxCellOutputValue(cell);
-            } else if (cell->type == "$pmux") {
-              return generatePmuxCellOutputValue(cell);
+    case 2: val = generateUnaryCellOutputValue(cell);
+            break;
+    case 3: val = generateBinaryCellOutputValue(cell);
+            break;
+    case 4: if (cell->type == ID($mux)) {
+              val = generateMuxCellOutputValue(cell);
+            } else if (cell->type == ID($pmux)) {
+              val = generatePmuxCellOutputValue(cell);
             } else {
               log_warning("Unsupported %s cell %s\n",
                           cell->type.c_str(), cell->name.c_str());
-              return generateInputValue(cell, ID::A);
+              val = generateInputValue(cell, ID::A);  // Fallback
             }
+            break;
     default: 
       log_warning("Totally weird cell %s\n", cell->type.c_str());
-      return nullptr;
+      val = generateInputValue(cell, ID::A);  // Fallback
+      break;
   }
 
   // TODO: Do any necessary width adjustments to result here?
+
+  // If the cell is driving a single wire, give the cell's output Value
+  // the wire name.  Otherwise the cell name.
+  std::string valName;
+  if (outputSig.is_wire()) {
+    valName = outputSig.as_wire()->name.str();
+  } else {
+    valName = cell->name.str();
+  }
+  val->setName(valName);
+
+  return val;
+
 }
 
 
