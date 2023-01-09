@@ -271,13 +271,13 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   log_assert(sigWidthY == cellWidthY);
 
   if (cellWidthA != cellWidthB) {
-    log_warning("Mismatched A/B widths for %s cell %s\n",
+    log_debug("Mismatched A/B widths for %s cell %s\n",
                 cell->type.c_str(), cell->name.c_str());
     log_flush();
   }
 
   if (!isReduce && cellWidthY != cellWidthA) {
-    log_warning("Mismatched A/Y widths for %s cell %s\n",
+    log_debug("Mismatched A/Y widths for %s cell %s\n",
                 cell->type.c_str(), cell->name.c_str());
     log_flush();
   }
@@ -420,6 +420,8 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 
 // Create a Value representing the output port of the given 3-input pmux cell.
 // This is a strange form of mux
+// TODO: Yosys optimization can try to get rid pf pmux cells (e.g. the pmuxtree
+// command), so we may rarely see them in practice.
 llvm::Value *
 LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 {
@@ -472,11 +474,13 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
   log_assert(valWidthS == cellWidthS);
 
 
-  // TODO: If A or B widths are bigger than their connections, zero
+  // TODO: If A or B widths are not what they should be, zero
   // or sign-extend the input data.  Consider \SIGNED attributes
   // BTW, SigSpecs do not have any information about signed-ness
+  // Possible approach: create a truncated or extended version of
+  // the input's DriverSpec, and generate (and cache) its value.
 
-  log_warning("Unsupported pmux cell %s\n", cell->name.c_str());
+  log_error("Unsupported pmux cell %s\n", cell->name.c_str());
   log("A:\n%s\n", log_signal(cell->getPort(ID::A)));
   log("B:\n%s\n", log_signal(cell->getPort(ID::B)));
   log("S:\n%s\n", log_signal(cell->getPort(ID::S)));
@@ -644,7 +648,7 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
   }
 
   // TODO: Is it worth adding this to the valueCache?  It would be necessary
-  // to create a relative complex temporary DriverSpec to serve as the key.
+  // to create a relatively complex temporary DriverSpec to serve as the key.
 
   return val;
 }
@@ -750,7 +754,8 @@ LLVMWriter::generateDestValue(RTLIL::Wire *wire)
 
 
 llvm::Function*
-LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *targetPort)
+LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod,
+                                 RTLIL::Wire *targetPort)
 {
   std::vector<llvm::Type *> argTy;
 
@@ -764,24 +769,16 @@ LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *targetPort)
     }
   }
 
-
   // A return type of the correct width
   llvm::Type* retTy = llvmWidth(targetPort->width);
-
 
   llvm::FunctionType *functype =
     llvm::FunctionType::get(retTy, argTy, false);
 
-
-  // Strip off the "\" from the wire name.
-  std::string destName = targetPort->name.str().substr(1);
-
   // Create the main function
   llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
 
-  llvm::Function *func = llvm::Function::Create(functype, linkage,
-                    "instr_"+destName, llvmMod.get());
-                    //destInfo.get_instr_name()+"_"+destSimpleName, llvmMod.get());
+  llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod.get());
 
   // Set the function's arg's names, and add them to the valueCache
   unsigned n = 0;
@@ -796,14 +793,17 @@ LLVMWriter::generateFunctionDecl(RTLIL::Module *mod, RTLIL::Wire *targetPort)
   }
 
   return func;
-
 }
 
 
 
 void
-LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName,
-                          RTLIL::Wire *targetPort, std::string llvmFileName)
+LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
+                          RTLIL::Wire *targetPort,  // in unrolledRtlMod
+                          std::string modName,  // from original Verilog, e.g. "M8080"
+                          std::string instrName,  // As specified in instr.txt
+                          std::string targetName,  // As specified in allowed_target.txt
+                          std::string llvmFileName)
 {
   assert(targetPort->port_output);
 
@@ -814,17 +814,16 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod, std::string modName,
   log("Built DriverFinder\n");
   log("%ld objects\n", finder.size());
 
-  // Strip off the "\" from the target port name.
-  std::string destName = targetPort->name.str().substr(1);
-
   c = std::make_unique<llvm::LLVMContext>();
   b = std::make_unique<llvm::IRBuilder<>>(*c);
-  llvmMod = std::make_unique<llvm::Module>("mod_"+modName+"_"+destName, *c);
+  llvmMod = std::make_unique<llvm::Module>("mod_;_"+modName+"_;_"+targetName, *c);
 
-  llvm::Function *func = generateFunctionDecl(unrolledRtlMod, targetPort);
+
+  std::string funcName = instrName+"_"+targetName;
+  llvm::Function *func = generateFunctionDecl(funcName, unrolledRtlMod, targetPort);
 
   // basic block
-  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+destName, func);
+  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, func);
   b->SetInsertPoint(BB);
 
   // All the real work happens here 

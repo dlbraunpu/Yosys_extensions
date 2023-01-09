@@ -26,6 +26,7 @@
 #include "func_extract/src/global_data_struct.h"
 #include "func_extract/src/parse_fill.h"
 #include "func_extract/src/read_instr.h"
+#include "func_extract/src/vcd_parser.h"
 #include "func_extract/src/get_all_update.h"
 #include "func_extract/src/helper.h"
 
@@ -83,8 +84,10 @@ pool<RTLIL::Wire*> processedPorts;
 
 // If necessary this will create a new port wire and a connection that applies any
 // 0/1 values to the original port wire.  If ss is all x, nothing has to be done.
+// The new port (if any) is returned.  The new or original port will be
+// added to the processedPorts list.
 RTLIL::Wire *
-applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool deleteDeadPort)
+applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool replaceDeadPort)
 {
   log_assert(origPort->port_input);
   log_assert(processedPorts.count(origPort) == 0);
@@ -103,7 +106,7 @@ applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool deleteDead
   mod->rename(origPort, newName);
 
   RTLIL::Wire *newPort = nullptr;
-  if (!(ss.is_fully_const() && deleteDeadPort)) {
+  if (!(ss.is_fully_const() && replaceDeadPort)) {
     // Make a new port only if it is useful or wanted
     newPort = mod->addWire(origName, origPort->width);
 
@@ -112,7 +115,7 @@ applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool deleteDead
     newPort->port_output = origPort->port_output;
     // TODO: Copy or move orig port attribtes to new wire.
   }
-  origPort->port_input = false;
+  origPort->port_input = false;  // the orignal port is demoted to an ordinary Wire
   origPort->port_output = false;
 
   if (ss.is_fully_const()) {
@@ -154,9 +157,20 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
     // Unlike the original funct_extract program, the unrolled RTL cycle
     // numbering matches the instr.txt cycle numbering:
     // starting at 1, and increasing in time.
-    int cycle = 1;
-    for (const std::string& valStr : values) {
 
+    for(int cycle = 1; cycle <= cycles; ++cycle) {
+      // If the encoding has fewer cycles than the specified cycle count, use
+      // the NOP values for the remaining cycles.
+
+      std::string valStr;
+      if ((unsigned)cycle <= values.size()) {
+        valStr = values[cycle-1];
+      } else if (funcExtract::g_nopInstr.count(inputName)) {
+        valStr = funcExtract::g_nopInstr[inputName];
+      } else {
+        continue;  // No data to apply
+      }
+    
       RTLIL::SigSpec ss;
       getSigSpec(valStr, ss);
       log("    RTLIL value: %s\n", log_signal(ss));
@@ -167,22 +181,19 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
 
       RTLIL::IdString portname = cycleize_name(std::string("\\"+inputName), cycle);
       log_debug("encoding: cycle %d  value %s portname %s\n", cycle, valStr.c_str(), portname.c_str());
-
       RTLIL::Wire *port = mod->wire(portname);
       if (!port) {
         log_error("Cannot find unrolled port %s\n", portname.c_str());
         continue;
       }
+
       if (!port->port_input) {
         log_error("Unrolled port %s is not an input\n", portname.c_str());
         continue;
       }
 
       adjustSigSpecWidth(ss, port->width);
-
-      applyPortSignal(port, ss, true /*deleteDeadPort*/);
-
-      cycle++;
+      applyPortSignal(port, ss, true /*replaceDeadPort*/);
     }
   }
 }
@@ -259,11 +270,14 @@ struct DougSmashCmd : public Pass {
 
     if (verbose) taintGen::g_verb = true;  // Override setting from config.txt
 
-    // read instr.txt, result in g_instrInfo
+    // read instr.txt, result in g_instrInfo:
     // instruction encodings, write/read ASV, NOP
     funcExtract::read_in_instructions(taintGen::g_path+"/instr.txt");
 
+    // Read target ASVs and reset data
     funcExtract::read_allowed_targets(taintGen::g_path+"/allowed_target.txt");
+
+    funcExtract::vcd_parser(taintGen::g_path+"/rst.vcd");
 
     RTLIL::IdString srcmodname = RTLIL::escape_id(taintGen::g_topModule);
     RTLIL::Module *srcmod = design->module(srcmodname);
@@ -325,11 +339,24 @@ struct DougSmashCmd : public Pass {
     log("Unrolling module `%s' into `%s' for num_cycles=%d...\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
     unroll_module(srcmod, destmod, num_cycles);
 
+    log("Unrolled module statistics:\n");
+    log_push();
+    Pass::call_on_module(design, destmod, "stat");
+    log_pop();
+
+    // Generating code for pmux cells is compicated, so have Yosys
+    // replace them with regular muxes.
+    log("Removing $pmux cells...\n");
+    log_push();
+    Pass::call_on_module(design, destmod, "pmuxtree");
+    Pass::call_on_module(design, destmod, "stat");
+    log_pop();
+
+
     if (do_opto) {
       // Optimize
       log("Optimizing...\n");
       log_push();
-      Pass::call_on_module(design, destmod, "stat");
       Pass::call_on_module(design, destmod, "opt");
       Pass::call_on_module(design, destmod, "stat");
       log_pop();
@@ -337,8 +364,6 @@ struct DougSmashCmd : public Pass {
 
     log("Applying instruction encoding...\n");
     applyInstrEncoding(destmod, instrInfo->instrEncoding, num_cycles);
-
-    // TODO: Apply NOP values as necessary to input ports.
 
     // Identify all first-cycle ASV inputs as processed, to prevent a reset value from
     // being placed upon them.
@@ -358,24 +383,44 @@ struct DougSmashCmd : public Pass {
     }
     destmod->fixup_ports();  // Necessary since we added and removed ports
 
-    // now give every remaining input port a zero reset value.
-    // TODO: read and use data in rst.vcd
+    // Apply any reset values as needed to input ports for cycle #1.
+    log("Applying reset values...\n");
+    for (auto pair : funcExtract::g_rstVal) {
+      std::string tmpnam = pair.first;
+      if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
+        tmpnam = "\\" + tmpnam;
+      }
+      RTLIL::IdString portname = cycleize_name(tmpnam, 1);
+      RTLIL::Wire *port = destmod->wire(portname);
+      if (port && port->port_input && processedPorts.count(port) == 0) {
+        const std::string& valStr = pair.second;
+        RTLIL::SigSpec ss;
+        getSigSpec(valStr, ss);
+        log_debug(" signal %s   reset value: %s\n", portname.c_str(), log_signal(ss));
+        if (ss.empty() || !ss.is_fully_const()) {
+          log_error("Cannot understand reset value %s for port %s\n",
+                    log_signal(ss), portname.c_str());
+          continue;
+        }
+        adjustSigSpecWidth(ss, port->width);
+        applyPortSignal(port, ss, true /*replaceDeadPort*/);
+      }
+    }
+    destmod->fixup_ports();  // Necessary since we added and removed ports
+
+    // Warn about any non-ASV input ports that have no value.
     for (const RTLIL::IdString& portname : destmod->ports) {
       RTLIL::Wire *port = destmod->wire(portname);
       log_assert(port);
       if (port->port_input && processedPorts.count(port) == 0) {
-        RTLIL::SigSpec ss(RTLIL::State::S0, port->width);
-        log_debug("zeroing uninteresting input port %s\n", portname.c_str());
-        applyPortSignal(port, ss, true /*deleteDeadPort*/);
+        log_warning("No value for non-ASV input port %s\n", portname.c_str());
       }
     }
-    destmod->fixup_ports();  // Necessary since we added and removed ports
 
     // Re-optimize
     if (do_opto) {
       log("Re-optimizing...\n");
       log_push();
-      Pass::call_on_module(design, destmod, "stat");
       Pass::call_on_module(design, destmod, "opt");
       Pass::call_on_module(design, destmod, "stat");
       log_pop();
@@ -395,8 +440,12 @@ struct DougSmashCmd : public Pass {
     if (targetPort && write_llvm) {
       log_header(design, "Writing LLVM data...\n");
 
+      // Same format as original func_extract
+      std::string llvmName = instrName + "_" + targetName + "_" + std::to_string(num_cycles)+".ll";
       LLVMWriter writer;
-      writer.write_llvm_ir(destmod, "xxx"/*module name*/, targetPort, "xxx.llvm" /*output file name*/);
+      writer.write_llvm_ir(destmod, targetPort, taintGen::g_topModule /*modName*/,
+                           instrName, targetName, llvmName);
+      log("LLVM result written to %s\n", llvmName.c_str());
     } else {
       log_warning("LLVM generation skipped.\n");
     }
