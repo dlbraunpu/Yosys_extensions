@@ -399,8 +399,11 @@ private:
 void dump_driverchunk(std::ostream &f, const DriverChunk &chunk, bool autoint = true);
 void dump_driverspec(std::ostream &f, const DriverSpec &driver, bool autoint = true);
 
-void log_driverchunk(const DriverChunk &chunk, bool autoint = true);
-void log_driverspec(const DriverSpec &driver, bool autoint = true);
+void log_driverchunk(const DriverChunk &chunk);
+void log_driverspec(const DriverSpec &driver);
+
+void log_debug_driverchunk(const DriverChunk &chunk);
+void log_debug_driverspec(const DriverSpec &driver);
 
 
 

@@ -75,7 +75,7 @@ LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
 
   if (_dict.find(driver) != _dict.end()) {
     // Already there
-    log_warning("Repeated addition of Value for driverspec:\n");
+    log_warning("Repeated calculation of Value for driverspec:\n");
     log_driverspec(driver);
     log("existing Value %p:\n", _dict[driver]);
     _dict[driver]->dump();
@@ -145,7 +145,7 @@ isReductionCell(RTLIL::IdString celltype)
 llvm::Value *
 LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
 {
-  log("generateUnaryCellOutputValue(): cell port %s Y width %d:\n",
+  log_debug("generateUnaryCellOutputValue(): cell port %s Y width %d:\n",
       cell->name.c_str(), cell->getPort(ID::Y).size());
   log_flush();
 
@@ -235,7 +235,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 {
-  log("generateBinaryCellOutputValue(): cell port %s Y width %d:\n",
+  log_debug("generateBinaryCellOutputValue(): cell port %s Y width %d:\n",
       cell->name.c_str(), cell->getPort(ID::Y).size());
   log_flush();
 
@@ -371,7 +371,7 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 {
-  log("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
+  log_debug("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
       cell->name.c_str(), cell->getPort(ID::Y).size());
   log_flush();
 
@@ -425,7 +425,7 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 {
-  log("generatePmuxCellOutputValue(): cell port %s widths: A %d B %d S %d:\n",
+  log_debug("generatePmuxCellOutputValue(): cell port %s widths: A %d B %d S %d:\n",
        cell->name.c_str(),
        cell->getPort(ID::A).size(),
        cell->getPort(ID::B).size(),
@@ -499,7 +499,7 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
 {
   RTLIL::SigSpec outputSig = cell->getPort(ID::Y);
 
-  log("generateCellOutputValue(): cell port %s Y  width %d:\n",
+  log_debug("generateCellOutputValue(): cell port %s Y  width %d:\n",
       cell->name.c_str(), outputSig.size());
   log_flush();
 
@@ -699,14 +699,14 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     // A complex driverSpec: a mix of wires, ports, and constants (or slices of them).
     // Generate each chunk's value with the proper offset, and OR them together.
 
-    log("generateValue for complex Driverspec\n");
-    log_driverspec(dSpec);
+    log_debug("generateValue for complex Driverspec\n");
+    log_debug_driverspec(dSpec);
 
 
     std::vector<llvm::Value*> values;
     int offset = 0;
     for (const DriverChunk& chunk : dSpec.chunks()) {
-      log_driverchunk(chunk);
+      log_debug_driverchunk(chunk);
       values.push_back(generateValue(chunk, dSpec.size(), offset));
       offset += chunk.size();
     }
@@ -737,7 +737,7 @@ llvm::Value *
 LLVMWriter::generateDestValue(RTLIL::Wire *wire)
 {
 
-  log("RTLIL Wire %s:\n", wire->name.c_str());
+  log_debug("RTLIL Wire %s:\n", wire->name.c_str());
   my_log_wire(wire);
 
   // Collect the drivers of each bit of the wire
@@ -745,8 +745,8 @@ LLVMWriter::generateDestValue(RTLIL::Wire *wire)
   finder.buildDriverOf(wire, dSpec);
 
   // Print what drives the bits of this wire
-  log_driverspec(dSpec);
-  log("\n");
+  log_debug_driverspec(dSpec);
+  log_debug("\n");
 
   return generateValue(dSpec);
 }
@@ -828,16 +828,16 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
 
   // All the real work happens here 
 
-  log("Destination port:\n");
-  my_log_wire(targetPort);
+  log_debug("Destination port:\n");
+  my_log_debug_wire(targetPort);
 
   // Collect the drivers of each bit of the destination wire
   DriverSpec dSpec;
   finder.buildDriverOf(targetPort, dSpec);
 
   // Print what drives the bits of this wire
-  log_driverspec(dSpec);
-  log("\n");
+  log_debug_driverspec(dSpec);
+  log_debug("\n");
 
   llvm::Value *destValue = generateValue(dSpec);
   b->CreateRet(destValue);

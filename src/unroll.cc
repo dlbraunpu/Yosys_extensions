@@ -309,7 +309,7 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src, SigMap &sigmap,
   log_assert(src->design == design);
 
   // Copy the contents of the module src into module dest.  
-  log("Smashing for cycle %d\n", cycle);
+  log_debug("Smashing for cycle %d\n", cycle);
 
   dict<IdString, IdString> memory_map;
   for (auto &src_memory_it : src->memories) {
@@ -662,12 +662,13 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
           // is not always helpful for this.
           // BTW, the ports for non-ASVs will typically get a reset value put
           // on them, and then will get optimized away.
-          log("first cycle input port: ");
-          my_log_sigspec(from_Q);
+          log_debug("first cycle input port: ");
+          my_log_debug_sigspec(from_Q);
           if (from_Q.is_wire()) {
             from_Q.as_wire()->port_input = true;
           } else {
-            log_warning("input signal is not a single wire!\n");
+            log_warning("input signal is not a single wire:\n");
+            my_log_sigspec(from_Q);
           }
         }
 
@@ -703,7 +704,7 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
             finalPortName = orig_Q.as_wire()->name.str();
           } else {
             log_warning("original Q signal is not a single wire!\n");
-            // Hack up a signal name
+            // Hack up a signal name for reporting
             my_log_sigspec(orig_Q);
             finalPortName = orig_ff.name.str() + "_Q";
           }
@@ -713,7 +714,7 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
           finalPort->port_output = true;
           join_sigs(destmod, to_D, finalPort);
 
-          log("final cycle output port %s\n", finalPort->name.c_str());
+          log_debug("final cycle output port %s\n", finalPort->name.c_str());
         }
       }
 

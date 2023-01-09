@@ -51,10 +51,6 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-bool verbose, noattr;
-
-
-
 
 // Translate the given string (something as complicated as
 // "7'h4+5'h7+5'h13+3'hx+5'h12+5'h8+2'b11", as read from instr.txt) into
@@ -67,7 +63,6 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
   llvm::APInt xmask = funcExtract::convert_to_single_apint(valStr, true /*xmask*/);
 
   unsigned width = value.getBitWidth();
-  log("    width %d\n", width);
   
   for (unsigned n = 0; n < width; ++n) {
     bool bitval = value[n];
@@ -82,20 +77,40 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
 pool<RTLIL::Wire*> processedPorts;
 
 
-// If necessary this will create a new port wire and a connection that applies any
-// 0/1 values to the original port wire.  If ss is all x, nothing has to be done.
-// The new port (if any) is returned.  The new or original port will be
-// added to the processedPorts list.
+// This function properly sets 0/1/x values on input ports, which may
+// represent ASVs, oriinary registers, or top-level input signals.
+
+// If the given SigSpec is all-x, origPort will be left alone.
+
+// If the SigSpec is fully const (0/1), origPort will be un-ported (thus
+// becoming a plain wire) and renamed, and the given 0/1 values will be set on
+// it.
+
+// If the SigSpec is a mix of 0, 1, and x, origPort will be un-ported and
+// renamed, and a new port will be created with its original name. Each 0/1
+// bit in SigSpec will be set on origPort, and for each x bit, origPort will
+// be connected to the new port.  (The bits in the new port corresponding to
+// 0/1 will be left unconnected.)
+
+// However, if forceRemove is true, origPort will always be un-ported, no new
+// port will be created, and origPort will get all the given 0/1/x values set
+// on it.
+
+// Any newly-created port will be returned.  The new or original port will be
+// added to the processedPorts list.  Be sure to call module->fixup_ports()
+// after calling this.
+
 RTLIL::Wire *
-applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool replaceDeadPort)
+applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool forceRemove)
 {
   log_assert(origPort->port_input);
   log_assert(processedPorts.count(origPort) == 0);
 
-  if (ss.is_fully_undef()) {
+  if (ss.is_fully_undef() && !forceRemove) {
     processedPorts.insert(origPort);
-    return origPort;  // no change needed
+    return origPort;  // no change needed: common case for ASVs.
   }
+
 
   RTLIL::Module *mod = origPort->module;
 
@@ -106,24 +121,23 @@ applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool replaceDea
   mod->rename(origPort, newName);
 
   RTLIL::Wire *newPort = nullptr;
-  if (!(ss.is_fully_const() && replaceDeadPort)) {
-    // Make a new port only if it is useful or wanted
+  if (!ss.is_fully_const() && !forceRemove) {
+    // Make a new port only if it is useful and wanted
     newPort = mod->addWire(origName, origPort->width);
 
     // The new port takes over the old port's status
     newPort->port_input = origPort->port_input;
     newPort->port_output = origPort->port_output;
-    // TODO: Copy or move orig port attribtes to new wire.
+    // TODO: Copy or move orig port attributes to new wire.
   }
   origPort->port_input = false;  // the orignal port is demoted to an ordinary Wire
   origPort->port_output = false;
 
-  if (ss.is_fully_const()) {
-    // Simply connect the original port wire to the constant SigSpec.
-    // The new port wire (if any) is a dead-end.
+  if (!newPort) {
+    // Simply connect the SigSpec to the original port wire.
     mod->connect(RTLIL::SigSpec(origPort), ss);
   } else {
-    // a partially-constant SigSpec: connect the old port to either the new port or the constant
+    // A partially-constant SigSpec: connect the old port to either the new port or the SigSpec
     // on a bit-by-bit basis.
     log_assert(newPort);
 
@@ -173,9 +187,10 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
     
       RTLIL::SigSpec ss;
       getSigSpec(valStr, ss);
-      log("    RTLIL value: %s\n", log_signal(ss));
+      log_debug("    RTLIL value: %s\n", log_signal(ss));
       if (ss.empty() || !ss.is_fully_const()) {
         log_error("Cannot understand value for port %s in cycle %d\n", inputName.c_str(), cycle);
+        log("    RTLIL value: %s\n", log_signal(ss));
         continue;
       }
 
@@ -193,7 +208,7 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
       }
 
       adjustSigSpecWidth(ss, port->width);
-      applyPortSignal(port, ss, true /*replaceDeadPort*/);
+      applyPortSignal(port, ss, false /*forceRemove*/);
     }
   }
 }
@@ -221,11 +236,6 @@ struct DougSmashCmd : public Pass {
     taintGen::g_path = ".";
     taintGen::g_verb = false;
 
-
-
-
-    verbose = false;
-    noattr = false;
     bool write_llvm = true;
     bool do_opto = true;
 
@@ -241,14 +251,7 @@ struct DougSmashCmd : public Pass {
     size_t argidx;
     for (argidx = 3; argidx < args.size(); argidx++) {
       std::string arg = args[argidx];
-      if (arg == "-noattr") {
-        noattr = true;
-        continue;
-      }
-      if (arg == "-v") {
-        verbose = true;  // TODO: replace with existing Yosys debug mechanism
-        continue;
-      }
+      
       if (arg == "-no_write_llvm") {
         write_llvm = false;
         continue;
@@ -268,7 +271,7 @@ struct DougSmashCmd : public Pass {
 
     funcExtract::read_config(taintGen::g_path+"/config.txt");
 
-    if (verbose) taintGen::g_verb = true;  // Override setting from config.txt
+    taintGen::g_verb = ys_debug();  // Override setting from config.txt
 
     // read instr.txt, result in g_instrInfo:
     // instruction encodings, write/read ASV, NOP
@@ -336,7 +339,7 @@ struct DougSmashCmd : public Pass {
     // Create the new module
     destmod = design->addModule(RTLIL::escape_id(destmodname.str()));
 
-    log("Unrolling module `%s' into `%s' for num_cycles=%d...\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
+    log("Unrolling module `%s' into `%s' for %d cycles...\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
     unroll_module(srcmod, destmod, num_cycles);
 
     log("Unrolled module statistics:\n");
@@ -384,6 +387,7 @@ struct DougSmashCmd : public Pass {
     destmod->fixup_ports();  // Necessary since we added and removed ports
 
     // Apply any reset values as needed to input ports for cycle #1.
+    // Explicit x reset values are included.
     log("Applying reset values...\n");
     for (auto pair : funcExtract::g_rstVal) {
       std::string tmpnam = pair.first;
@@ -403,19 +407,25 @@ struct DougSmashCmd : public Pass {
           continue;
         }
         adjustSigSpecWidth(ss, port->width);
-        applyPortSignal(port, ss, true /*replaceDeadPort*/);
+        applyPortSignal(port, ss, true /*forceRemove*/);
       }
     }
     destmod->fixup_ports();  // Necessary since we added and removed ports
 
-    // Warn about any non-ASV input ports that have no value.
+    // Warn about any non-ASV input ports that have no value,
+    // and give them X values.
     for (const RTLIL::IdString& portname : destmod->ports) {
       RTLIL::Wire *port = destmod->wire(portname);
       log_assert(port);
       if (port->port_input && processedPorts.count(port) == 0) {
         log_warning("No value for non-ASV input port %s\n", portname.c_str());
+        // Set to x, possibly opto will eliminate it.
+        RTLIL::SigSpec ss(RTLIL::State::Sx);
+        adjustSigSpecWidth(ss, port->width);
+        applyPortSignal(port, ss, true /*forceRemove*/);
       }
     }
+    destmod->fixup_ports();  // Necessary since we added and removed ports
 
     // Re-optimize
     if (do_opto) {
@@ -434,6 +444,7 @@ struct DougSmashCmd : public Pass {
     if (!targetPort) {
       log_error("Can't find output port wire for destination ASV %s\n", targetName.c_str());
     } else {
+      log("Target SigSpec: ");
       my_log_wire(targetPort);
     }
 

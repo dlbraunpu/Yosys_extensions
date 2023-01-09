@@ -1526,16 +1526,16 @@ void DriverFinder::build(RTLIL::Module *mod)
       // conn.first is the signal IdString, conn.second is its SigSpec
       if (cell->output(conn.first)) {
         RTLIL::SigSpec canonical_sig = sigmap(conn.second);
-        //log("\nCell %s port %s -> ", cell->name.c_str(),  conn.first.c_str());
-        //my_log_sigspec(conn.second);
-        //log("\ncanonical: ");
-        //my_log_sigspec(canonical_sig);
+        //log_debug("\nCell %s port %s -> ", cell->name.c_str(),  conn.first.c_str());
+        //my_log_debug_sigspec(conn.second);
+        //log_debug("\ncanonical: ");
+        //my_log_debug_sigspec(canonical_sig);
         int idx = 0;
         for (auto& bit : canonical_sig.to_sigbit_vector()) {
           // sigmap(conn.second) is the canonical SigSpec.
           // bit is a canonical SigBit
-          //log("  ");
-          //my_log_sigbit(bit);
+          //log_debug("  ");
+          //my_log_debug_sigbit(bit);
           log_assert(bit.is_wire());  // A cell can't drive a constant!
           log_assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);
           canonical_sigbit_to_driving_cell_table.emplace(bit, CellPortBit{cell, conn.first, idx});
@@ -1548,10 +1548,10 @@ void DriverFinder::build(RTLIL::Module *mod)
   for (auto wire : module->wires()) {
     if (wire->port_input) {
       RTLIL::SigSpec canonical_sig = sigmap(wire);
-      log("\nport_input wire :\n");
-      my_log_wire(wire);
-      log("\ncanonical sigspec:\n");
-      my_log_sigspec(canonical_sig);
+      log_debug("\nport_input wire :\n");
+      my_log_debug_wire(wire);
+      log_debug("\ncanonical sigspec:\n");
+      my_log_debug_sigspec(canonical_sig);
       int idx = 0;
       for (auto& bit : canonical_sig.to_sigbit_vector()) {
         // sigmap(wire) is the canonical SigSpec.
@@ -1571,10 +1571,10 @@ DriverFinder::getDrivingWire(const RTLIL::SigBit& sigbit)
 {
   RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
 
-  //log("getDrivingWire:  ");
-  //my_log_sigbit(sigbit);
-  //log("canonical:  ");
-  //my_log_sigbit(canonicalSigbit);
+  //log_debug("getDrivingWire:  ");
+  //my_log_debug_sigbit(sigbit);
+  //log_debug("canonical:  ");
+  //my_log_debug_sigbit(canonicalSigbit);
 
   auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_wire_table.end()) {
@@ -1590,10 +1590,10 @@ DriverFinder::getDrivingCell(const RTLIL::SigBit& sigbit)
 {
   RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
 
-  //log("getDrivingCell:  ");
-  //my_log_sigbit(sigbit);
-  //log("canonical:  ");
-  //my_log_sigbit(canonicalSigbit);
+  //log_debug("getDrivingCell:  ");
+  //my_log_debug_sigbit(sigbit);
+  //log_debug("canonical:  ");
+  //my_log_debug_sigbit(canonicalSigbit);
 
   auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_cell_table.end()) {
@@ -1711,20 +1711,36 @@ void dump_driverspec(std::ostream &f, const DriverSpec &driver, bool autoint)
 }
 
 
-void log_driverchunk(const DriverChunk &chunk, bool autoint)
+void log_driverchunk(const DriverChunk &chunk)
 {
   std::stringstream buf;
-  dump_driverchunk(buf, chunk, autoint);
+  dump_driverchunk(buf, chunk, false);
   log("driver chunk: %s\n", buf.str().c_str());
   log_flush();
 }
 
 
 
-void log_driverspec(const DriverSpec &driver, bool autoint)
+void log_driverspec(const DriverSpec &driver)
 {
   std::stringstream buf;
-  dump_driverspec(buf, driver, autoint);
+  dump_driverspec(buf, driver, false);
   log("driver spec: %s\n", buf.str().c_str());
   log_flush();
+}
+
+void log_debug_driverchunk(const DriverChunk &chunk)
+{
+  if (ys_debug()) {
+    log_driverchunk(chunk);
+  }
+}
+
+
+
+void log_debug_driverspec(const DriverSpec &driver)
+{
+  if (ys_debug()) {
+    log_driverspec(driver);
+  }
 }
