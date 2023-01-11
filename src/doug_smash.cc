@@ -169,10 +169,12 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
     log_debug("Input variable: %s\n", inputName.c_str());
 
     // Unlike the original funct_extract program, the unrolled RTL cycle
-    // numbering matches the instr.txt cycle numbering:
-    // starting at 1, and increasing in time.
+    // numbering matches the instr.txt cycle numbering: starting at 1, and
+    // increasing in time.  Note that the very last cycle (num_cycles+1)
+    // should not have any instruction encoding, and NOP values will be used
+    // for it.
 
-    for(int cycle = 1; cycle <= cycles; ++cycle) {
+    for(int cycle = 1; cycle <= cycles+1; ++cycle) {
       // If the encoding has fewer cycles than the specified cycle count, use
       // the NOP values for the remaining cycles.
 
@@ -209,6 +211,20 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
 
       adjustSigSpecWidth(ss, port->width);
       applyPortSignal(port, ss, false /*forceRemove*/);
+
+      // Set x on any clock inputs. The name of the clock signal is defined in
+      // instr.txt.  Normally the clock signals will be dead, since we removed
+      // all the registers.
+      if (!taintGen::g_recentClk.empty()) {
+        RTLIL::IdString clockname = cycleize_name(std::string("\\"+taintGen::g_recentClk), cycle);
+        RTLIL::Wire *clockport = mod->wire(clockname);
+        if (clockport && clockport->port_input) {
+          // Set to x, probably opto will eliminate it.
+          RTLIL::SigSpec ss(RTLIL::State::Sx);
+          adjustSigSpecWidth(ss, clockport->width);
+          applyPortSignal(clockport, ss, true /*forceRemove*/);
+        }
+      }
     }
   }
 }
@@ -330,24 +346,41 @@ struct DougSmashCmd : public Pass {
     design->sort();
 
     if (!srcmod->processes.empty()) {
-      log_warning("Module %s contains unmapped RTLIL processes. RTLIL processes\n"
-                  "can't always be mapped directly to Verilog always blocks. Unintended\n"
-                  "changes in simulation behavior are possible! Use \"proc\" to convert\n"
-                  "processes to logic networks and registers.\n", id2cstr(srcmodname));
+      log_error("Module %s contains unmapped RTLIL processes.\n"
+                "Run the Yosys 'proc' command before this command.\n", id2cstr(srcmodname));
     }
 
     // Create the new module
     destmod = design->addModule(RTLIL::escape_id(destmodname.str()));
 
-    log("Unrolling module `%s' into `%s' for %d cycles...\n", id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
+    log("Unrolling module `%s' into `%s' for %d cycles...\n",
+        id2cstr(srcmodname), id2cstr(destmodname), num_cycles);
     unroll_module(srcmod, destmod, num_cycles);
+
+    // Make into output ports the final-cycle (num_cycles+1) signals that represent ASVs.
+    // Typically these are the from_Q signals created by unroll_module().
+    for (auto pair : funcExtract::g_allowedTgt) {
+      std::string tmpnam = pair.first;
+      if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
+        tmpnam = "\\" + tmpnam;
+      }
+      RTLIL::IdString portname = cycleize_name(tmpnam, num_cycles+1);
+      RTLIL::Wire *port = destmod->wire(portname);
+      if (port) {
+        port->port_output = true;
+      } else {
+        log_warning("Cannot find unrolled final-cycle signal for ASV %s\n", tmpnam.c_str());
+        continue;
+      }
+    }
+    destmod->fixup_ports();  // Necessary since we added ports
 
     log("Unrolled module statistics:\n");
     log_push();
     Pass::call_on_module(design, destmod, "stat");
     log_pop();
 
-    // Generating code for pmux cells is compicated, so have Yosys
+    // Generating code for pmux cells is complicated, so have Yosys
     // replace them with regular muxes.
     log("Removing $pmux cells...\n");
     log_push();
@@ -356,6 +389,8 @@ struct DougSmashCmd : public Pass {
     log_pop();
 
 
+    // Doing opto here gives little improvement
+#if 0
     if (do_opto) {
       // Optimize
       log("Optimizing...\n");
@@ -364,6 +399,7 @@ struct DougSmashCmd : public Pass {
       Pass::call_on_module(design, destmod, "stat");
       log_pop();
     }
+#endif
 
     log("Applying instruction encoding...\n");
     applyInstrEncoding(destmod, instrInfo->instrEncoding, num_cycles);
@@ -379,7 +415,7 @@ struct DougSmashCmd : public Pass {
       RTLIL::IdString portname = cycleize_name(tmpnam, 1);
       RTLIL::Wire *port = destmod->wire(portname);
       if (!port || !port->port_input) {
-        log_error("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());
+        log_warning("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());
         continue;
       }
       processedPorts.insert(port);
@@ -438,11 +474,15 @@ struct DougSmashCmd : public Pass {
 
     // Get the Yosys RTLIL object representing the destination ASV.
     // TODO: Do a better job of mapping the original Verilog register name to the actual wire name.
-    std::string portName = "\\" + targetName + "_#final";
+
+    std::string portName = targetName + "_#"+ std::to_string(num_cycles+1);
+    if (portName[0] != '\\') {  // Don't double-backslash the name.
+      portName = "\\" + portName;
+    }
     RTLIL::Wire *targetPort = destmod->wire(portName);
 
     if (!targetPort) {
-      log_error("Can't find output port wire for destination ASV %s\n", targetName.c_str());
+      log_warning("Can't find output port wire %s for destination ASV %s\n", portName.c_str(), targetName.c_str());
     } else {
       log("Target SigSpec: ");
       my_log_wire(targetPort);
