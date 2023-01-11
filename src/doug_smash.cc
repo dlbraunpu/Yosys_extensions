@@ -254,34 +254,40 @@ struct DougSmashCmd : public Pass {
 
     bool write_llvm = true;
     bool do_opto = true;
+    bool read_rst = true;
 
     if (args.size() < 4) {
       log_error("Not enough arguments!\n");
       return;
     }
 
-    std::string instrName = args[1];
-    std::string targetName = args[2];
-
+    std::string instrName;
+    std::string targetName;
 
     size_t argidx;
-    for (argidx = 3; argidx < args.size(); argidx++) {
+    for (argidx = 1; argidx < args.size(); argidx++) {
       std::string arg = args[argidx];
       
-      if (arg == "-no_write_llvm") {
+      if (arg[0] != '-') {
+        if (instrName.empty()) {
+          instrName = arg;
+        } else if (targetName.empty()) {
+          targetName = arg;
+        } else {
+          break;
+        }
+      } else if (arg == "-no_write_llvm") {
         write_llvm = false;
-        continue;
-      }
-      if (arg == "-no_opto") {
+      } else if (arg == "-no_opto") {
         do_opto = false;
-        continue;
-      }
-      if (arg == "-path") {
+      } else if (arg == "-no_rst") {
+        read_rst = false;
+      } else if (arg == "-path" && argidx < args.size()-1) {
         ++argidx;
         taintGen::g_path = args[argidx];
-        continue;
+      } else {
+        break;
       }
-      break;
     }
     extra_args(args, argidx, design);
 
@@ -296,7 +302,11 @@ struct DougSmashCmd : public Pass {
     // Read target ASVs and reset data
     funcExtract::read_allowed_targets(taintGen::g_path+"/allowed_target.txt");
 
-    funcExtract::vcd_parser(taintGen::g_path+"/rst.vcd");
+    if (read_rst) {
+      funcExtract::vcd_parser(taintGen::g_path+"/rst.vcd");
+    } else {
+      log_warning("rst.vcd will not be read - non-ASV registers will be initialized to zero.\n");
+    }
 
     RTLIL::IdString srcmodname = RTLIL::escape_id(taintGen::g_topModule);
     RTLIL::Module *srcmod = design->module(srcmodname);
@@ -492,7 +502,9 @@ struct DougSmashCmd : public Pass {
       log_header(design, "Writing LLVM data...\n");
 
       // Same format as original func_extract
-      std::string llvmName = instrName + "_" + targetName + "_" + std::to_string(num_cycles)+".ll";
+      std::string cleanTargetName = funcExtract::var_name_convert(targetName, true);
+      std::string llvmName = instrName + "_" + cleanTargetName + "_" + std::to_string(num_cycles)+".ll";
+
       LLVMWriter writer;
       writer.write_llvm_ir(destmod, targetPort, taintGen::g_topModule /*modName*/,
                            instrName, targetName, llvmName);

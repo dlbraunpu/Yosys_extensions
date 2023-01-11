@@ -145,10 +145,6 @@ isReductionCell(RTLIL::IdString celltype)
 llvm::Value *
 LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
 {
-  log_debug("generateUnaryCellOutputValue(): cell port %s Y width %d:\n",
-      cell->name.c_str(), cell->getPort(ID::Y).size());
-  log_flush();
-
   // There are three potentially different values of width for any cell
   // connection:  The WIDTH attribute on the cell itself, the width of
   // the connected SigSpec, and the width of the llvm::Value that was
@@ -172,20 +168,39 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
 
   bool isReduce = isReductionCell(cell->type);
 
-  // TODO: Sanity check: pin widths match driver/load widths.
+  log_debug("generateUnaryCellOutputValue(): cell port %s Y width %d:\n",
+      cell->name.c_str(), cell->getPort(ID::Y).size());
+  log_flush();
+
+  // Sanity check: pin widths match driver/load widths.
   // Also that reduce cells have output width of 1.
 
   log_assert(sigWidthY == sigWidthA || sigWidthY == 1);
   log_assert(cellWidthY == cellWidthA || cellWidthY == 1);
   log_assert(sigWidthA == cellWidthA);
   log_assert(sigWidthY == cellWidthY);
-
-  // TODO: If valWidthA is different than the cell width, zero
-  // or sign-extend the input data.  Consider \SIGNED attributes.
-  // BTW, SigSpecs do not have any information about signed-ness.
   log_assert(valWidthA == cellWidthA);
 
+  // Normalize the actual A/Y width to the largest of the cell and Value widths.
+  // Presumably the width of an input pin's Value was correctly set when it
+  // was generated from the corresponding SigSpec.
+  // TODO: Can truncating ever be necessary?
+  unsigned workingWidth = std::max({cellWidthA, cellWidthY, valWidthA});
+
+  if (valWidthA < workingWidth) {
+    valA = signedA ? b->CreateSExtOrTrunc(valA, llvmWidth(workingWidth)) :
+                     b->CreateZExtOrTrunc(valA, llvmWidth(workingWidth));
+    valWidthA = valA->getType()->getIntegerBitWidth();
+  }
+
+  if (!isReduce && cellWidthY != cellWidthA) {
+    log_debug("Mismatched A/Y widths for %s cell %s\n",
+                cell->type.c_str(), cell->name.c_str());
+    log_flush();
+  }
+
   if (isReduce && cellWidthY != 1) {
+    // TODO: zero extend single-bit result.
     log_warning("Oversize Y width for reduction %s cell %s\n",
                 cell->type.c_str(), cell->name.c_str());
     log_flush();
@@ -235,10 +250,6 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 {
-  log_debug("generateBinaryCellOutputValue(): cell port %s Y width %d:\n",
-      cell->name.c_str(), cell->getPort(ID::Y).size());
-  log_flush();
-
   // See the above rant on widths...
 
   unsigned sigWidthA = (unsigned)(cell->getPort(ID::A).size());  // Size of SigSpec
@@ -262,10 +273,14 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 
   bool isReduce = isReductionCell(cell->type);
 
-  // TODO: Sanity check: pin widths match driver/load widths.
-  // Also that reduce cells have output width of 1.
+  log_debug("test generateBinaryCellOutputValue(): cell port %s Y width %d:\n",
+      cell->name.c_str(), cell->getPort(ID::Y).size());
+  log_flush();
 
-  log_assert(sigWidthY >= sigWidthA || sigWidthY == 1);
+  // Sanity check: pin widths match driver/load widths.
+  // Also that reduce cells have output width of 1.
+  
+  // I have seen correct cells where Y is narrower than A or B.
   log_assert(sigWidthA == cellWidthA);
   log_assert(sigWidthB == cellWidthB);
   log_assert(sigWidthY == cellWidthY);
@@ -292,17 +307,18 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   // Normalize the actual A/B/Y width to the largest of the cell and Value widths.
   // Presumably the width of an input pin's Value was correctly set when it
   // was generated from the corresponding SigSpec.
-  // TODO: Handle unsigned.
   // TODO: Can truncating ever be necessary?
   unsigned workingWidth = std::max({cellWidthA, cellWidthB, cellWidthY, valWidthA, valWidthB});
 
   if (valWidthA < workingWidth) {
-    valA = b->CreateZExtOrTrunc(valA, llvmWidth(workingWidth));
+    valA = signedA ? b->CreateSExtOrTrunc(valA, llvmWidth(workingWidth)) :
+                     b->CreateZExtOrTrunc(valA, llvmWidth(workingWidth));
     valWidthA = valA->getType()->getIntegerBitWidth();
   }
 
   if (valWidthB < workingWidth) {
-    valB = b->CreateZExtOrTrunc(valB, llvmWidth(workingWidth));
+    valB = signedB ? b->CreateSExtOrTrunc(valB, llvmWidth(workingWidth)) :
+                     b->CreateZExtOrTrunc(valB, llvmWidth(workingWidth));
     valWidthB = valB->getType()->getIntegerBitWidth();
   }
 
@@ -371,10 +387,6 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 {
-  log_debug("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
-      cell->name.c_str(), cell->getPort(ID::Y).size());
-  log_flush();
-
   log_assert(cell->type == ID($mux));
 
   // See the above rant on widths...
@@ -398,6 +410,10 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   llvm::Value *valS = generateInputValue(cell, ID::S);
   unsigned valWidthS = valS->getType()->getIntegerBitWidth();
 
+  log_debug("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
+      cell->name.c_str(), cell->getPort(ID::Y).size());
+  log_flush();
+
   // TODO: Sanity check: pin widths match driver/load widths.
 
   log_assert(sigWidthA == cellWidth);
@@ -405,13 +421,22 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   log_assert(sigWidthY == cellWidth);
   log_assert(sigWidthS == 1);
 
+  // If A or B widths are different than their connections, zero
+  // or sign-extend the input data.  No \SIGNED attributes to consider.
+  // I have observed A/B input signals WIDER than the cell width
+  if (valWidthA != cellWidth) {
+    valA = b->CreateZExtOrTrunc(valA, llvmWidth(cellWidth));
+    valWidthA = valA->getType()->getIntegerBitWidth();
+  }
+
+  if (valWidthB != cellWidth) {
+    valB = b->CreateZExtOrTrunc(valB, llvmWidth(cellWidth));
+    valWidthB = valB->getType()->getIntegerBitWidth();
+  }
+
   log_assert(valWidthA == cellWidth);
   log_assert(valWidthB == cellWidth);
   log_assert(valWidthS == 1);
-
-
-  // TODO: If A or B widths are bigger than their connections, zero
-  // or sign-extend the input data.  No \SIGNED attributes to consider.
 
   return b->CreateSelect(valS, valA, valB);
 }
@@ -588,7 +613,7 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
     }
 
     if (offset > 0) {
-      valStr += std::string(offset, '0');
+      valStr += std::string(offset, '0');  // Effectively a left shift.
     }
 
     if (totalWidth > chunk.size() + offset) {
@@ -689,7 +714,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
 
       // Clean up.
       for (char& ch : valStr) {
-        if (ch == 'x') ch = '0';
+        if (ch == 'x') ch = '0'; 
       }
     }
 

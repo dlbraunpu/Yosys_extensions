@@ -363,7 +363,8 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
     // For FF cells, update the dict that maps the (cycle-independent) register
     // name to the new cell.  Later we will delete these cells.
     if (RTLIL::builtin_ff_cell_types().count(src_cell->type) > 0) {
-      log_debug("Smashing ff cell %s for cycle %d\n", src_cell->name.c_str(), cycle);
+      log_debug("Smashing %s cell %s for cycle %d\n",
+                src_cell->type.c_str(), src_cell->name.c_str(), cycle);
 
       registers[src_cell] = new_cell;
     }
