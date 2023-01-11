@@ -639,12 +639,13 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
     return val;  // No padding needed
   }
 
-  if (chunk.offset > 0) {
-    val = b->CreateShl(val, offset);
-  }
-
+  // Extend before shifting!
   if ((unsigned)totalWidth != val->getType()->getIntegerBitWidth()) {
     val = b->CreateZExtOrTrunc(val, llvmWidth(totalWidth));
+  }
+
+  if (chunk.offset > 0) {
+    val = b->CreateShl(val, offset);
   }
 
   // TODO: Is it worth adding this to the valueCache?  It would be necessary
