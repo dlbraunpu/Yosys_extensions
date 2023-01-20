@@ -1,11 +1,13 @@
-#include "util.h"
-  
-// LLVM headers (many more than needed)
+
+#include "func_extract/src/helper.h"
 
 // Yosys headers
 #include "kernel/rtlil.h"
 #include "kernel/sigtools.h"
 #include "backends/rtlil/rtlil_backend.h"
+
+
+#include "util.h"
 
 USING_YOSYS_NAMESPACE
 
@@ -51,16 +53,22 @@ void my_log_debug_wire(const RTLIL::Wire *wire)
 }
 
 
-// Doug: add "_#<cycle>" to the name
+// Doug: add a trailing "__#<cycle>_" to the name - the format used by the
+// orignal func_extract code.  Since we are starting with a legal Yosys
+// internal name, there is no need to worry about the leading character.
 IdString cycleize_name(IdString object_name, int cycle)
 {
-  return cycleize_name(object_name.c_str(), cycle);
+  return IdString(funcExtract::timed_name(object_name.c_str(), cycle));
 }
 
-// Doug: add "_#<cycle>" to the name
-IdString cycleize_name(const char *name, int cycle)
+// Doug: add a leading "\" and a
+// trailing "__#<cycle>_" to the name.
+IdString cycleize_name(const std::string& name, int cycle)
 {
-  return stringf("%s_#%d", name, cycle);
+  // If the user name already has a backslash (e.g. "\reg[4]" or "\modx.reg"),
+  // don't add a second backslash (Yosys would just remove it).
+  std::string slashedName = (name[0] == '\\') ? name : std::string("\\")+name;
+  return IdString(funcExtract::timed_name(slashedName, cycle));
 }
 
 
@@ -81,3 +89,70 @@ adjustSigSpecWidth(RTLIL::SigSpec& ss, int newWidth)
   }
 }
 
+
+// Pretty much cut-and-pasted from the Yosys write_verilog code.
+// Map an internal name to the equivalent Verilog name it was presumably
+// made from.  Remove a leading backslash, unless it is needed to make
+// the name a legal Verilog identifier.
+std::string internalToV(RTLIL::IdString internal_id)
+{
+  const char *str = internal_id.c_str();
+
+  if (*str == '$') {
+    // Auto-generated names are returned unchanged.
+    return std::string(str);
+  }
+
+  bool do_escape = false;
+
+  if (*str == '\\')
+    str++;
+
+  if ('0' <= *str && *str <= '9')
+    do_escape = true;
+
+  for (int i = 0; str[i]; i++)
+  {
+    if ('0' <= str[i] && str[i] <= '9')
+      continue;
+    if ('a' <= str[i] && str[i] <= 'z')
+      continue;
+    if ('A' <= str[i] && str[i] <= 'Z')
+      continue;
+    if (str[i] == '_')
+      continue;
+    do_escape = true;
+    break;
+  }
+
+  const pool<string> keywords = {
+    // IEEE 1800-2017 Annex B
+    "accept_on", "alias", "always", "always_comb", "always_ff", "always_latch", "and", "assert", "assign", "assume", "automatic", "before",
+    "begin", "bind", "bins", "binsof", "bit", "break", "buf", "bufif0", "bufif1", "byte", "case", "casex", "casez", "cell", "chandle",
+    "checker", "class", "clocking", "cmos", "config", "const", "constraint", "context", "continue", "cover", "covergroup", "coverpoint",
+    "cross", "deassign", "default", "defparam", "design", "disable", "dist", "do", "edge", "else", "end", "endcase", "endchecker",
+    "endclass", "endclocking", "endconfig", "endfunction", "endgenerate", "endgroup", "endinterface", "endmodule", "endpackage",
+    "endprimitive", "endprogram", "endproperty", "endsequence", "endspecify", "endtable", "endtask", "enum", "event", "eventually",
+    "expect", "export", "extends", "extern", "final", "first_match", "for", "force", "foreach", "forever", "fork", "forkjoin", "function",
+    "generate", "genvar", "global", "highz0", "highz1", "if", "iff", "ifnone", "ignore_bins", "illegal_bins", "implements", "implies",
+    "import", "incdir", "include", "initial", "inout", "input", "inside", "instance", "int", "integer", "interconnect", "interface",
+    "intersect", "join", "join_any", "join_none", "large", "let", "liblist", "library", "local", "localparam", "logic", "longint",
+    "macromodule", "matches", "medium", "modport", "module", "nand", "negedge", "nettype", "new", "nexttime", "nmos", "nor",
+    "noshowcancelled", "not", "notif0", "notif1", "null", "or", "output", "package", "packed", "parameter", "pmos", "posedge", "primitive",
+    "priority", "program", "property", "protected", "pull0", "pull1", "pulldown", "pullup", "pulsestyle_ondetect", "pulsestyle_onevent",
+    "pure", "rand", "randc", "randcase", "randsequence", "rcmos", "real", "realtime", "ref", "reg", "reject_on", "release", "repeat",
+    "restrict", "return", "rnmos", "rpmos", "rtran", "rtranif0", "rtranif1", "s_always", "s_eventually", "s_nexttime", "s_until",
+    "s_until_with", "scalared", "sequence", "shortint", "shortreal", "showcancelled", "signed", "small", "soft", "solve", "specify",
+    "specparam", "static", "string", "strong", "strong0", "strong1", "struct", "super", "supply0", "supply1", "sync_accept_on",
+    "sync_reject_on", "table", "tagged", "task", "this", "throughout", "time", "timeprecision", "timeunit", "tran", "tranif0", "tranif1",
+    "tri", "tri0", "tri1", "triand", "trior", "trireg", "type", "typedef", "union", "unique", "unique0", "unsigned", "until", "until_with",
+    "untyped", "use", "uwire", "var", "vectored", "virtual", "void", "wait", "wait_order", "wand", "weak", "weak0", "weak1", "while",
+    "wildcard", "wire", "with", "within", "wor", "xnor", "xor",
+  };
+  if (keywords.count(str))
+    do_escape = true;
+
+  if (do_escape)
+    return "\\" + std::string(str) + " ";
+  return std::string(str);
+}

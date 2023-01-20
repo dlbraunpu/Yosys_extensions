@@ -34,6 +34,7 @@
 #include "util.h"
 #include "unroll.h"
 #include "write_llvm.h"
+#include "post_process.h"
 
 #include "kernel/register.h"
 #include "kernel/celltypes.h"
@@ -195,7 +196,7 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
         continue;
       }
 
-      RTLIL::IdString portname = cycleize_name(std::string("\\"+inputName), cycle);
+      RTLIL::IdString portname = cycleize_name(inputName, cycle);
       log_debug("encoding: cycle %d  value %s portname %s\n", cycle, valStr.c_str(), portname.c_str());
       RTLIL::Wire *port = mod->wire(portname);
       if (!port) {
@@ -215,7 +216,7 @@ applyInstrEncoding(RTLIL::Module* mod, const funcExtract::InstEncoding_t& encodi
       // instr.txt.  Normally the clock signals will be dead, since we removed
       // all the registers.
       if (!taintGen::g_recentClk.empty()) {
-        RTLIL::IdString clockname = cycleize_name(std::string("\\"+taintGen::g_recentClk), cycle);
+        RTLIL::IdString clockname = cycleize_name(taintGen::g_recentClk, cycle);
         RTLIL::Wire *clockport = mod->wire(clockname);
         if (clockport && clockport->port_input) {
           // Set to x, probably opto will eliminate it.
@@ -245,16 +246,12 @@ makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Module *srcmod,
   // Make into output ports the final-cycle (num_cycles+1) signals that represent ASVs.
   // Typically these are the from_Q signals created by unroll_module().
   for (auto pair : funcExtract::g_allowedTgt) {
-    std::string tmpnam = pair.first;
-    if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
-      tmpnam = "\\" + tmpnam;
-    }
-    RTLIL::IdString portname = cycleize_name(tmpnam, num_cycles+1);
+    RTLIL::IdString portname = cycleize_name(pair.first, num_cycles+1);
     RTLIL::Wire *port = unrolledMod->wire(portname);
     if (port) {
       port->port_output = true;
     } else {
-      log_warning("Cannot find unrolled final-cycle signal for ASV %s\n", tmpnam.c_str());
+      log_warning("Cannot find unrolled final-cycle signal for ASV %s\n", pair.first.c_str());
       continue;
     }
   }
@@ -293,11 +290,7 @@ makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Module *srcmod,
   // being placed upon them.
 
   for (auto pair : funcExtract::g_allowedTgt) {
-    std::string tmpnam = pair.first;
-    if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
-      tmpnam = "\\" + tmpnam;
-    }
-    RTLIL::IdString portname = cycleize_name(tmpnam, 1);
+    RTLIL::IdString portname = cycleize_name(pair.first, 1);
     RTLIL::Wire *port = unrolledMod->wire(portname);
     if (!port || !port->port_input) {
       log_warning("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());
@@ -311,11 +304,7 @@ makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Module *srcmod,
   // Explicit x reset values are included.
   log("Applying reset values...\n");
   for (auto pair : funcExtract::g_rstVal) {
-    std::string tmpnam = pair.first;
-    if (tmpnam[0] != '\\') {  // Don't double-backslash the name.
-      tmpnam = "\\" + tmpnam;
-    }
-    RTLIL::IdString portname = cycleize_name(tmpnam, 1);
+    RTLIL::IdString portname = cycleize_name(pair.first, 1);
     RTLIL::Wire *port = unrolledMod->wire(portname);
     if (port && port->port_input && processedPorts.count(port) == 0) {
       const std::string& valStr = pair.second;
@@ -513,10 +502,7 @@ struct FuncExtractCmd : public Pass {
       // Get the Yosys RTLIL object representing the destination ASV.
       // TODO: Do a better job of mapping the original Verilog register name to the actual wire name.
 
-      std::string portName = targetName + "_#"+ std::to_string(num_cycles+1);
-      if (portName[0] != '\\') {  // Don't double-backslash the name.
-        portName = "\\" + portName;
-      }
+      RTLIL::IdString portName = cycleize_name(targetName, num_cycles+1);
       RTLIL::Wire *targetPort = unrolledMod->wire(portName);
 
       if (!targetPort) {
@@ -531,17 +517,32 @@ struct FuncExtractCmd : public Pass {
 
         // Same format as original func_extract
         std::string cleanTargetName = funcExtract::var_name_convert(targetName, true);
-        std::string llvmName = instrName + "_" + cleanTargetName + "_" + std::to_string(num_cycles)+".ll";
+        std::string llvmBaseName = instrName + "_" + cleanTargetName + "_" + std::to_string(num_cycles);
+        std::string llvmName = llvmBaseName+".tmp-ll";
 
         LLVMWriter writer;
         writer.write_llvm_ir(unrolledMod, targetPort, taintGen::g_topModule /*modName*/,
                              instrName, targetName, llvmName);
         log("LLVM result written to %s\n", llvmName.c_str());
+
+        std::string funcName = instrName+"_"+targetName;  // Must match what write_llvm_ir() does
+        LLVMPostProcessor post;
+        post.post_process_llvm(funcName, llvmBaseName, targetName);
+
       } else {
         log_warning("LLVM generation skipped.\n");
       }
 
     }
+
+    funcExtract::print_llvm_script(taintGen::g_path+"/link.sh");
+
+    std::ofstream funcInfo(taintGen::g_path+"/func_info.txt");
+    funcExtract::print_func_info(funcInfo);
+
+    std::ofstream asvInfo(taintGen::g_path+"/asv_info.txt");
+    funcExtract::print_asv_info(asvInfo);
+
 
   }
 } FuncExtractCmd;

@@ -252,7 +252,7 @@ no_special_reg_name:
 
 
 
-// Doug: add "_#<cycle>" to the object's name, and ensure that it is unique.
+// Doug: add "__#<cycle>" to the object's name, and ensure that it is unique.
 // Because of the uniquification, it is sort of dangerous to parse object names
 // to determine the cycle number they are associated with. TODO: Add a cycle
 // number attribute to critical objects (e.g. module ports)?

@@ -565,13 +565,13 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
 
   // If the cell is driving a single wire, give the cell's output Value
   // the wire name.  Otherwise the cell name.
-  std::string valName;
+  RTLIL::IdString valName;
   if (outputSig.is_wire()) {
-    valName = outputSig.as_wire()->name.str();
+    valName = outputSig.as_wire()->name;
   } else {
-    valName = cell->name.str();
+    valName = cell->name;
   }
-  val->setName(valName);
+  val->setName(internalToV(valName));
 
   return val;
 
@@ -806,13 +806,15 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
   llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod.get());
 
-  // Set the function's arg's names, and add them to the valueCache
+  // Set the function's args' names, and add them to the valueCache.
+  // Note that the arg names get translated back to their original Verilog
+  // form.
   unsigned n = 0;
   for (const RTLIL::IdString& portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
     if (port->port_input) {
       llvm::Argument *arg = func->getArg(n);
-      arg->setName(portname.str());
+      arg->setName(internalToV(portname));
       valueCache.add(arg, DriverSpec(port));
       n++;
     }
