@@ -93,8 +93,9 @@ adjustSigSpecWidth(RTLIL::SigSpec& ss, int newWidth)
 // Pretty much cut-and-pasted from the Yosys write_verilog code.
 // Map an internal name to the equivalent Verilog name it was presumably
 // made from.  Remove a leading backslash, unless it is needed to make
-// the name a legal Verilog identifier.
-std::string internalToV(RTLIL::IdString internal_id)
+// the name a legal Verilog identifier.  Note that unrolled names (with '#')
+// will get backslashed.
+std::string internalToV(IdString internal_id)
 {
   const char *str = internal_id.c_str();
 
@@ -155,4 +156,12 @@ std::string internalToV(RTLIL::IdString internal_id)
   if (do_escape)
     return "\\" + std::string(str) + " ";
   return std::string(str);
+}
+
+
+IdString verilogToInternal(const std::string& name)
+{
+  // If the user name already has a backslash (e.g. "\reg[4]" or "\modx.reg"),
+  // don't add a second backslash (Yosys would just remove it).
+  return RTLIL::escape_id(name);
 }

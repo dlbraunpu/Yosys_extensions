@@ -1,5 +1,5 @@
-#ifndef UTIL_H
-#define UTIL_H
+#ifndef YOSYS_EXTENSIONS_UTIL_H
+#define YOSYS_EXTENSIONS_UTIL_H
 
 #include "kernel/yosys.h"
 
@@ -17,6 +17,7 @@ Yosys::RTLIL::IdString cycleize_name(const std::string& name, int cycle);
 Yosys::RTLIL::IdString cycleize_name(Yosys::RTLIL::IdString object_name, int cycle);
 
 std::string internalToV(Yosys::RTLIL::IdString internal_id);
+Yosys::RTLIL::IdString verilogToInternal(const std::string& name);
 
 // Truncate or zero-extend the SigSpec as necessary to make it the given width.
 // An all-x value will be x-extended.

@@ -384,8 +384,10 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
 
 
 // Add the logic needed to model a FF's SRST signal.
-void wire_up_srst(RTLIL::Module* mod, FfData& ff,
-                  RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
+// Return the AND gate that implements the reset
+RTLIL::Cell*
+wire_up_srst(RTLIL::Module* mod, FfData& ff,
+             RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
 {
   log_debug("Wire up srst\n");
   // To model the reset, add an inverter and an AND gate between D and Q
@@ -445,6 +447,8 @@ void wire_up_srst(RTLIL::Module* mod, FfData& ff,
   // Return the modified D and Q connections to the caller.
   to_D = w_d;
   from_Q = ff.sig_q;
+
+  return and_gate;
 }
 
 
@@ -552,10 +556,17 @@ bool split_ff(RTLIL::Cell *cell,
   if (ff.has_srst && ff.has_ce) {
     if (!ff.ce_over_srst) {
       log_debug("Process ce+srst\n");
-      wire_up_srst(mod, ff, to_D, from_Q); // Fills in to_D and from_Q
-      RTLIL::SigSpec dummy_ss;
-      // Yes, wire_up_ce() will insert the mux ahead of the AND gate added by wire_up_srst().
-      wire_up_ce(mod, ff, dummy_ss, dummy_ss);
+
+
+      RTLIL::SigSpec dummy;
+      RTLIL::Cell *and_gate = wire_up_srst(mod, ff, to_D, dummy); // Fills in to_D and dummy
+
+      RTLIL::SigSpec ce_mux_out;
+      wire_up_ce(mod, ff, ce_mux_out, from_Q);
+
+      // Connect the ce mux output to the reset input
+      and_gate->setPort(ID::A, ce_mux_out);
+
     } else {
       // This is less common...
       log_warning("TODO: process ce_over_srst\n");

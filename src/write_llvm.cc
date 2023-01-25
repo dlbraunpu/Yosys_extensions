@@ -47,6 +47,42 @@ LLVMWriter::reset()
 
 
 
+static bool
+isZero(llvm::Value *val)
+{
+  if (llvm::ConstantInt *ci = llvm::dyn_cast<llvm::ConstantInt>(val)) {
+    return ci->isZero();
+  }
+  return false;
+}
+
+
+
+static bool
+isAllOnes(llvm::Value *val)
+{
+  if (llvm::ConstantInt *ci = llvm::dyn_cast<llvm::ConstantInt>(val)) {
+    return ci->isMinusOne();
+  }
+  return false;
+}
+
+
+
+
+// Just remove the leading backslash, if any
+static std::string
+internalToLLVM(RTLIL::IdString name)
+{
+  const char *s = name.c_str();
+  log_assert(s[0] == '\\' || s[0] == '$');
+  if (s[0] == '\\') {
+    return s+1;
+  }
+  return s;
+}
+
+
 llvm::IntegerType *
 LLVMWriter::llvmWidth(unsigned a) {
   return llvm::IntegerType::get(*c, a);
@@ -102,7 +138,7 @@ LLVMWriter::ValueCache::find(const DriverSpec& driver)
 
 // Find or create a Value representing what drives the given input port of the given cell.
 llvm::Value *
-LLVMWriter::generateInputValue(RTLIL::Cell *cell, const RTLIL::IdString& port)
+LLVMWriter::generateInputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 {
   log_assert(cell->hasPort(port));
   log_assert(cell->input(port));
@@ -326,7 +362,16 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   log_assert(valWidthB == workingWidth);
 
   if (cell->type == ID($and)) {
-    return b->CreateAnd(valA, valB);
+    // A common case with FF srst signals: an AND gate has a true input,
+    // but opt refuses to delete the cell.  BTW CreateAnd() does this
+    // same optimization, but only if the RHS is all ones!
+    if (isAllOnes(valA)) {
+      return valB;
+    } else if (isAllOnes(valB)) {
+      return valA;
+    } else {
+      return b->CreateAnd(valA, valB);
+    }
   } else if (cell->type == ID($or)) {
     return b->CreateOr(valA, valB);
   } else if (cell->type == ID($xor)) {
@@ -520,7 +565,7 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 // The caller is reponsible for that.
 // TODO: Should it instead make a temporary DriverSpec to access the valueCache?
 llvm::Value *
-LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& port)
+LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 {
   RTLIL::SigSpec outputSig = cell->getPort(ID::Y);
 
@@ -563,15 +608,16 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, const RTLIL::IdString& po
 
   // TODO: Do any necessary width adjustments to result here?
 
-  // If the cell is driving a single wire, give the cell's output Value
-  // the wire name.  Otherwise the cell name.
-  RTLIL::IdString valName;
-  if (outputSig.is_wire()) {
-    valName = outputSig.as_wire()->name;
-  } else {
-    valName = cell->name;
+  // If the new Value is an Instruction driving a single wire, name it
+  // after that wire, if the wire's name is not auto-generated. But don't
+  // rename things, and don't try to name non-Instructions, especially
+  // function args.
+  if (llvm::isa<llvm::Instruction>(val) && val->getName().empty() && outputSig.is_wire()) {
+    RTLIL::IdString valName = outputSig.as_wire()->name;
+    if (valName[0] != '$') {
+      val->setName(internalToLLVM(valName));
+    }
   }
-  val->setName(internalToV(valName));
 
   return val;
 
@@ -787,7 +833,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
   // Add every module input port, which includes the first-cycle ASV inputs
   // and the unrolled copies of the original input ports.
-  for (const RTLIL::IdString& portname : mod->ports) {
+  for (RTLIL::IdString portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
     log_assert(port);
     if (port->port_input) {
@@ -810,11 +856,11 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
   // Note that the arg names get translated back to their original Verilog
   // form.
   unsigned n = 0;
-  for (const RTLIL::IdString& portname : mod->ports) {
+  for (RTLIL::IdString portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
     if (port->port_input) {
       llvm::Argument *arg = func->getArg(n);
-      arg->setName(internalToV(portname));
+      arg->setName(internalToLLVM(portname));
       valueCache.add(arg, DriverSpec(port));
       n++;
     }

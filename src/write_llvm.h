@@ -55,7 +55,7 @@ private:
 
   // Find or create a Value representing what drives the given input port of the given cell.
   llvm::Value *generateInputValue(Yosys::RTLIL::Cell *cell,
-                             const Yosys::RTLIL::IdString& port);
+                                  Yosys::RTLIL::IdString port);
 
 
   // Helpers for generateCellOutputValue() below
@@ -70,7 +70,7 @@ private:
   // The caller is reponsible for that.
   // TODO: Should it instead make a temporary DriverSpec to access the valueCache?
   llvm::Value *generateCellOutputValue(Yosys::RTLIL::Cell *cell,
-                             const Yosys::RTLIL::IdString& port);
+                                       Yosys::RTLIL::IdString port);
 
 
   // Generate the value of the given chunk, which is constant, or a
