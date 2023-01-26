@@ -26,6 +26,8 @@
 #include "util.h"
 #include "driver_tools.h"
 
+// This file has no dependencies on anything in autoGenILA/src/func_extract
+
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 
@@ -567,16 +569,19 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 {
+  // Here we handle only builtin cells.
+  // Hierarchical modules are a different thing.
+  if (cell->name[0] != '$' || cell->type[0] != '$') {
+    log_error("Unsupported hierarchical cell %s\n", cell->name.c_str());
+    return nullptr;
+  }
+
+
   RTLIL::SigSpec outputSig = cell->getPort(ID::Y);
 
   log_debug("generateCellOutputValue(): cell port %s Y  width %d:\n",
       cell->name.c_str(), outputSig.size());
   log_flush();
-
-  // Here we handle only builtin cells.
-  // Hierarchical modules are a different thing.
-  log_assert(cell->name[0] == '$');
-  log_assert(cell->type[0] == '$');
 
   // All builtin cell outputs are supposed to be Y
   log_assert(port == ID::Y);
@@ -854,13 +859,14 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
   // Set the function's args' names, and add them to the valueCache.
   // Note that the arg names get translated back to their original Verilog
-  // form.
+  // form.  It is important to match the naming convention of the original
+  // func_extract program.
   unsigned n = 0;
   for (RTLIL::IdString portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
     if (port->port_input) {
       llvm::Argument *arg = func->getArg(n);
-      arg->setName(internalToLLVM(portname));
+      arg->setName(internalToV(portname));
       valueCache.add(arg, DriverSpec(port));
       n++;
     }
@@ -877,7 +883,8 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
                           std::string modName,  // from original Verilog, e.g. "M8080"
                           std::string instrName,  // As specified in instr.txt
                           std::string targetName,  // As specified in allowed_target.txt
-                          std::string llvmFileName)
+                          std::string llvmFileName,
+                          std::string funcName)
 {
   assert(targetPort->port_output);
 
@@ -892,8 +899,6 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   b = std::make_unique<llvm::IRBuilder<>>(*c);
   llvmMod = std::make_unique<llvm::Module>("mod_;_"+modName+"_;_"+targetName, *c);
 
-
-  std::string funcName = instrName+"_"+targetName;
   llvm::Function *func = generateFunctionDecl(funcName, unrolledRtlMod, targetPort);
 
   // basic block

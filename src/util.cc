@@ -93,8 +93,9 @@ adjustSigSpecWidth(RTLIL::SigSpec& ss, int newWidth)
 // Pretty much cut-and-pasted from the Yosys write_verilog code.
 // Map an internal name to the equivalent Verilog name it was presumably
 // made from.  Remove a leading backslash, unless it is needed to make
-// the name a legal Verilog identifier.  Note that unrolled names (with '#')
-// will get backslashed.
+// the name a legal Verilog identifier.  We cheat a little, considering
+// a "___#nn_" substring (used in unrolled names) to be legal.
+//
 std::string internalToV(IdString internal_id)
 {
   const char *str = internal_id.c_str();
@@ -109,6 +110,14 @@ std::string internalToV(IdString internal_id)
   if (*str == '\\')
     str++;
 
+  // We don't care if there is a '#' in a properly unrolled name, but we do need
+  // to escape any '#' in a different context.
+  // TODO: Ideally we would use functions in funcExtract to parse the
+  // unrolled name, convert the base portion, and re-unroll the result.
+  
+  static const std::regex unrolled_re("[^\\s#]___#\\d+_");
+  bool is_unrolled = std::regex_match(str, unrolled_re);
+
   if ('0' <= *str && *str <= '9')
     do_escape = true;
 
@@ -122,6 +131,9 @@ std::string internalToV(IdString internal_id)
       continue;
     if (str[i] == '_')
       continue;
+    if (str[i] == '#' && is_unrolled)
+      continue;
+    
     do_escape = true;
     break;
   }

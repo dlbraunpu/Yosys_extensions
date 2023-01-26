@@ -345,6 +345,7 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
 
   std::string instr_name = destInfo.get_instr_name();
   std::string targetName = destInfo.get_dest_name();
+  std::string funcName = destInfo.get_func_name();
 
   std::string origModName = internalToV(m_srcmod->name);
 
@@ -395,9 +396,11 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   
   log_header(m_des, "Writing LLVM data...\n");
 
+  Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+fileName+".rtlil");
+
   LLVMWriter writer;
   writer.write_llvm_ir(unrolledMod, targetPort, origModName,
-                       instr_name, targetName, fileName);
+                       instr_name, targetName, fileName, funcName);
   log("LLVM result written to %s\n", fileName.c_str());
 
 }
@@ -426,18 +429,21 @@ uint32_t YosysModuleInfo::get_var_width_simp(const std::string& var,
 }
 
 
-// Here, the variable name can be hierarchical
+// var might have a module name prefix. This function parses the module name
+// and get corresponding module information This syntax is used only in files
+// like allowed_target.txt, and is different than a flattened hierarchical
+// name  of the form "\<instname>.<varname>"
+
 uint32_t YosysModuleInfo::get_var_width_cmplx(const std::string& var)
 {
-  // Don't be confused by the standard leading '\'
-  if (var.find(".") == std::string::npos || var.substr(1, 1) == "\\") {
+  if (var.find(".") == std::string::npos || var.substr(0, 1) == "\\") {
     return get_var_width_simp(var, "");
   } else {
     size_t pos = var.find(".");
     std::string modName = var.substr(0, pos);
     std::string varName = var.substr(pos+1);
     if (!is_module(modName)) {
-      log_error("Error: mod not found");
+      log_error("Error: module %s not found\n", modName.c_str());
       abort();
     }
     RTLIL::Module *subMod = m_des->module(verilogToInternal(modName));

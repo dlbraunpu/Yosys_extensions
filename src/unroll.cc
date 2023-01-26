@@ -359,6 +359,12 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
     new_cell->rewrite_sigspecs(rewriter);
     design->select(dest, new_cell);
 
+    // Warn if we discover explicit hierarchy in the data.
+    if (src_cell->name[0] != '$') {
+      log_warning("Smashing user-defined %s cell %s for cycle %d\n",
+                src_cell->type.c_str(), src_cell->name.c_str(), cycle);
+    }
+
 
     // For FF cells, update the dict that maps the (cycle-independent) register
     // name to the new cell.  Later we will delete these cells.
@@ -400,8 +406,12 @@ wire_up_srst(RTLIL::Module* mod, FfData& ff,
   and_gate->setParam(ID::A_SIGNED, 0);
   and_gate->setParam(ID::B_SIGNED, 0);
 
-  // Connect the signal driving the D pin to the A input of the AND gate
-  and_gate->setPort(ID::A, ff.sig_d);
+  // Connect the signal driving the D pin to the B input of the AND gate
+  and_gate->setPort(ID::B, ff.sig_d);
+
+  // We use an AND gate because we assume the cell is reset to sero.
+  // Otherwise we need a mux with a constant at one input.
+  log_assert(ff.val_srst.is_fully_zero());
 
   if (ff.pol_srst) {
     // Positive reset needs an inverter
@@ -426,7 +436,7 @@ wire_up_srst(RTLIL::Module* mod, FfData& ff,
     std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
     RTLIL::SigSpec widened_w_inv(sigbits);
 
-    and_gate->setPort(ID::B, widened_w_inv);
+    and_gate->setPort(ID::A, widened_w_inv);
     
   } else {
     // Negative reset goes directly to B input (duplicated if width > 1)
@@ -435,7 +445,7 @@ wire_up_srst(RTLIL::Module* mod, FfData& ff,
     std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
     RTLIL::SigSpec widened_srst(sigbits);
 
-    and_gate->setPort(ID::B, widened_srst);
+    and_gate->setPort(ID::A, widened_srst);
   }
 
   // Lastly we need a stub wire from the AND gate output which
@@ -453,7 +463,8 @@ wire_up_srst(RTLIL::Module* mod, FfData& ff,
 
 
 // Add the logic needed to model a FF's CE signal.
-void wire_up_ce(RTLIL::Module* mod, FfData& ff,
+RTLIL::Cell*
+wire_up_ce(RTLIL::Module* mod, FfData& ff,
                   RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
 {
   log_debug("Wire up ce\n");
@@ -484,6 +495,8 @@ void wire_up_ce(RTLIL::Module* mod, FfData& ff,
   // Return the modified D and Q connections to the caller.
   to_D = w_d;
   from_Q = ff.sig_q;
+
+  return mux;
 }
 
 
@@ -565,11 +578,21 @@ bool split_ff(RTLIL::Cell *cell,
       wire_up_ce(mod, ff, ce_mux_out, from_Q);
 
       // Connect the ce mux output to the reset input
-      and_gate->setPort(ID::A, ce_mux_out);
+      and_gate->setPort(ID::B, ce_mux_out);
 
     } else {
       // This is less common...
-      log_warning("TODO: process ce_over_srst\n");
+      log_warning("process ce_over_srst\n");
+
+      RTLIL::SigSpec dummy;
+      RTLIL::Cell *mux = wire_up_ce(mod, ff, to_D, dummy); // Fills in to_D and dummy
+
+      RTLIL::SigSpec ce_rst_out;
+      wire_up_srst(mod, ff, ce_rst_out, from_Q);
+
+      // Connect the rst output to the ce mux input
+      mux->setPort(ID::B, ce_rst_out);
+
     }
   } else if (ff.has_srst) {
     log_debug("Process srst\n");
@@ -684,8 +707,10 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
             initialPort = from_Q.as_chunk().wire;
             log_warning("initial cycle Q signal is a slice of a wire!\n");
             my_log_sigspec(from_Q);
+          } else if (from_Q.empty()) {
+            log_warning("initial cycle Q signal is unconnected!\n");
           } else {
-            log_warning("initial cycle Q signal contains multiple wires!\n");
+            log_warning("initial cycle Q signal contains multiple wires?\n");
             my_log_sigspec(from_Q);
           }
 

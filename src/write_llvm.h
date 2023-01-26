@@ -101,7 +101,8 @@ public:
                      std::string modName, 
                      std::string instrName,
                      std::string targetName,
-                     std::string llvmFileName);
+                     std::string llvmFileName,
+                     std::string funcName);
 
   void reset();
 
