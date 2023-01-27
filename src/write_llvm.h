@@ -76,7 +76,7 @@ private:
   // Generate the value of the given chunk, which is constant, or a
   // slice of a single wire or cell output.  The result will be offset
   // by the given amount, and zero-extended to totalWidth.
-  llvm::Value *generateValue(const DriverChunk& chunk,
+  llvm::Value *generateChunkValue(const DriverChunk& chunk,
                              int totalWidth, int offset);
 
 

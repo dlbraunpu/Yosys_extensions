@@ -368,10 +368,8 @@ public:
 
   // The most important functions
 
-  // Get a description of what drives the given cell (input) port. driver gets filled in.
-  void buildDriverOf(const Yosys::RTLIL::Cell *cell, const Yosys::RTLIL::IdString& port, DriverSpec& driver);
 
-  // Get a description of what drives the given module (output) port. driver gets filled in.
+  // Get a description of what drives the given wire. driver gets filled in.
   void buildDriverOf(Yosys::RTLIL::Wire *wire, DriverSpec& driver);
         
   // Get a description of what drives the given SigSpec. driver gets filled in.
@@ -379,8 +377,8 @@ public:
 
 
   // Mostly for internal use
-  WireBit *getDrivingWire(const Yosys::RTLIL::SigBit& sigbit);
-  CellPortBit *getDrivingCell(const Yosys::RTLIL::SigBit& sigbit);
+  WireBit *getDrivingWire(const Yosys::RTLIL::SigBit& canonicalSigbit);
+  CellPortBit *getDrivingCell(const Yosys::RTLIL::SigBit& canonicalSigbit);
 
 private:
   Yosys::RTLIL::Module *module;

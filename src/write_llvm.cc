@@ -615,7 +615,7 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 
   // If the new Value is an Instruction driving a single wire, name it
   // after that wire, if the wire's name is not auto-generated. But don't
-  // rename things, and don't try to name non-Instructions, especially
+  // re-name things, and don't try to name non-Instructions, especially
   // function args.
   if (llvm::isa<llvm::Instruction>(val) && val->getName().empty() && outputSig.is_wire()) {
     RTLIL::IdString valName = outputSig.as_wire()->name;
@@ -634,8 +634,8 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 // slice of a single wire or cell output.  The result will be offset
 // by the given amount, and zero-extended to totalWidth.
 llvm::Value *
-LLVMWriter::generateValue(const DriverChunk& chunk,
-                           int totalWidth, int offset)
+LLVMWriter::generateChunkValue(const DriverChunk& chunk,
+                               int totalWidth, int offset)
 {
   assert(totalWidth >= chunk.size() + offset);
 
@@ -658,7 +658,8 @@ LLVMWriter::generateValue(const DriverChunk& chunk,
       }
     }
 
-    // Clean up.
+    // Clean up. TODO: Be more clever about mapping 'x' to either 0 or 1,
+    // with the goal of simplifying the logic.
     for (char& ch : valStr) {
       if (ch != '0' && ch != '1') ch = '0';
     }
@@ -784,7 +785,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     int offset = 0;
     for (const DriverChunk& chunk : dSpec.chunks()) {
       log_debug_driverchunk(chunk);
-      values.push_back(generateValue(chunk, dSpec.size(), offset));
+      values.push_back(generateChunkValue(chunk, dSpec.size(), offset));
       offset += chunk.size();
     }
 

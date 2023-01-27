@@ -65,8 +65,8 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
 // If the given SigSpec is all-x, origPort will be left alone.
 
 // If the SigSpec is fully const (0/1), origPort will be un-ported (thus
-// becoming a plain wire) and renamed, and the given 0/1 values will be set on
-// it.
+// becoming a plain wire) and renamed, and the SigSpec's 0/1 values will be
+// set on the wire.
 
 // If the SigSpec is a mix of 0, 1, and x, origPort will be un-ported and
 // renamed, and a new port will be created with its original name. Each 0/1
@@ -81,6 +81,11 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
 // Any newly-created port will be returned.  The new or original port will be
 // added to the processedPorts list.  Be sure to call module->fixup_ports()
 // after calling this.
+
+// TODO: It is possible for some (or all?) of origPort's bits to have a
+// constant already set on them in the design.  We should probably avoid connecting
+// anything else to such a bit.  Checking this would require building and
+// using a SigMap.
 
 RTLIL::Wire *
 YosysUFGenerator::applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool forceRemove,
@@ -292,6 +297,9 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
 
   // Apply any reset values as needed to input ports for cycle #1.
   // Explicit x reset values are included.
+  // TODO: It is possible for some (or all?) of the port's bits to have a
+  // constant already set on them in the design.  Will a class between the
+  // reset value and that constant cause problems?
   log("Applying reset values...\n");
   for (auto pair : funcExtract::g_rstVal) {
     RTLIL::IdString portname = cycleize_name(pair.first, 1);

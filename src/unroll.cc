@@ -676,7 +676,20 @@ void join_sigs(RTLIL::Module *destmod,
   log_assert(!to_sig.empty());
   log_assert(from_sig.size() == to_sig.size());
 
-  destmod->connect(from_sig, to_sig);
+  log_debug("Joining sigs:\n");
+  my_log_debug_sigspec(from_sig);
+  my_log_debug_sigspec(to_sig);
+
+  // Warning: there is a bug in RTLIL::Module::connect():  If the first
+  // SigSpec has any constant bits, that bit position will be left out of the
+  // connection.  But that will not be the case for constant bits in the
+  // second sigSpec.  So, pass from_sig (which could often have constant bits)
+  // as the second SigBit.  A comment in rtlil.cc at line 2214 says that the
+  // goal is to avoid connecting constants to other constants, but the
+  // implementation does not do that.
+
+  assert(!to_sig.has_const());
+  destmod->connect(to_sig, from_sig);
 
 }
 
@@ -759,18 +772,26 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
             initialPort = from_Q.as_wire();
           } else if (from_Q.is_chunk() && from_Q.as_chunk().is_wire()) {
             initialPort = from_Q.as_chunk().wire;
-            log_warning("initial cycle Q signal is a slice of a wire!\n");
+            log_warning("Initial cycle Q signal is a slice of a wire!\n");
             my_log_sigspec(from_Q);
           } else if (from_Q.empty()) {
-            log_warning("initial cycle Q signal is unconnected!\n");
+            log_warning("Initial cycle Q signal is unconnected!\n");
+          } else if (from_Q.is_fully_const()) {
+            log_warning("Initial cycle Q signal is constant!\n");
           } else {
-            log_warning("initial cycle Q signal contains multiple wires?\n");
+            log_warning("Initial cycle Q signal is complicated:\n");
             my_log_sigspec(from_Q);
+            // I have observed a case where from_Q was a complex subset of a wire's bits.
+            for (auto chunk : from_Q.chunks()) {
+              if (chunk.is_wire()) {
+                chunk.wire->port_input = true;
+              }
+            }
           }
 
           if (initialPort) {
             initialPort->port_input = true;
-            log_debug("first cycle input port %s\n", initialPort->name.c_str());
+            log_debug("First cycle input port %s\n", initialPort->name.c_str());
           }
         }
 

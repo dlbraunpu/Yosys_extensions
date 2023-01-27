@@ -669,8 +669,8 @@ void DriverSpec::remove(const DriverSpec &pattern)
 
 void DriverSpec::remove(const DriverSpec &pattern, DriverSpec *other) const
 {
-	DriverSpec tmp = *this;
-	tmp.remove2(pattern, other);
+	DriverSpec tmpDs = *this;
+	tmpDs.remove2(pattern, other);
 }
 
 void DriverSpec::remove2(const DriverSpec &pattern, DriverSpec *other)
@@ -716,8 +716,8 @@ void DriverSpec::remove(const pool<DriverBit> &pattern)
 
 void DriverSpec::remove(const pool<DriverBit> &pattern, DriverSpec *other) const
 {
-	DriverSpec tmp = *this;
-	tmp.remove2(pattern, other);
+	DriverSpec tmpDs = *this;
+	tmpDs.remove2(pattern, other);
 }
 
 void DriverSpec::remove2(const pool<DriverBit> &pattern, DriverSpec *other)
@@ -1546,8 +1546,8 @@ void DriverFinder::build(RTLIL::Module *mod)
                         cell->name.c_str(), conn.first.c_str(), idx, bit.data);
           }
 
-          if (canonical_sigbit_to_driving_wire_table.count(bit) != 0) { //tmp
-            log("Multi-driven bit!:\n");
+          if (canonical_sigbit_to_driving_wire_table.count(bit) != 0) { 
+            log_warning("Multi-driven bit!:\n");
             my_log_sigbit(bit);
             log("Driven by %s %d and cell output %s %d\n",
                       canonical_sigbit_to_driving_wire_table[bit].wire->name.c_str(),
@@ -1606,15 +1606,8 @@ void DriverFinder::build(RTLIL::Module *mod)
 
 
 DriverFinder::WireBit*
-DriverFinder::getDrivingWire(const RTLIL::SigBit& sigbit)
+DriverFinder::getDrivingWire(const RTLIL::SigBit& canonicalSigbit)
 {
-  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
-
-  //log_debug("getDrivingWire:  ");
-  //my_log_debug_sigbit(sigbit);
-  //log_debug("canonical:  ");
-  //my_log_debug_sigbit(canonicalSigbit);
-
   auto iter = canonical_sigbit_to_driving_wire_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_wire_table.end()) {
     return &(iter->second);
@@ -1625,15 +1618,8 @@ DriverFinder::getDrivingWire(const RTLIL::SigBit& sigbit)
 
 
 DriverFinder::CellPortBit*
-DriverFinder::getDrivingCell(const RTLIL::SigBit& sigbit)
+DriverFinder::getDrivingCell(const RTLIL::SigBit& canonicalSigbit)
 {
-  RTLIL::SigBit canonicalSigbit = sigmap(sigbit);
-
-  //log_debug("getDrivingCell:  ");
-  //my_log_debug_sigbit(sigbit);
-  //log_debug("canonical:  ");
-  //my_log_debug_sigbit(canonicalSigbit);
-
   auto iter = canonical_sigbit_to_driving_cell_table.find(canonicalSigbit);
   if (iter != canonical_sigbit_to_driving_cell_table.end()) {
     return &(iter->second);
@@ -1642,52 +1628,49 @@ DriverFinder::getDrivingCell(const RTLIL::SigBit& sigbit)
 }
 
 
-// Get a description of what drives the given cell (input) port.
-void
-DriverFinder::buildDriverOf(const RTLIL::Cell *cell, const RTLIL::IdString& port, DriverSpec& driver)
-{
-  log_assert(cell->module == module);
-  RTLIL::SigSpec sigspec = cell->getPort(port);
-  buildDriverOf(sigspec, driver);
-}
+// Get a description of what drives the given wire (which is typically
+// a module output port).
 
-
-
-
-// Get a description of what drives the given module (output) port.
 void
 DriverFinder::buildDriverOf(RTLIL::Wire *wire, DriverSpec& driver)
 {
   log_assert(wire->module == module);
-  RTLIL::SigSpec sigspec = sigmap(wire);
+  RTLIL::SigSpec sigspec(wire);
   buildDriverOf(sigspec, driver);
 }
 
 
-// Get a description of what drives the given SigSpec.
+// Get a description of what drives the given SigSpec (which could be the
+// connection of a cell input port, or a wire representing a module output
+// port).
+
 void
 DriverFinder::buildDriverOf(const RTLIL::SigSpec& sigspec, DriverSpec& driver)
 {
   driver = DriverSpec();  // Clear
 
   for (auto& bit : sigspec.to_sigbit_vector()) {
+    RTLIL::SigBit canonicalBit = sigmap(bit);
+
     DriverBit dBit;
 
-    if (!bit.is_wire()) {
+    if (!canonicalBit.is_wire()) {
       // A constant data value
-      dBit = DriverBit(bit.data);
+      dBit = DriverBit(canonicalBit.data);
     } else {
       // See if the driver is a module input port (represented by a wire)
-      WireBit *wb = getDrivingWire(bit);
+      WireBit *wb = getDrivingWire(canonicalBit);
       if (wb) {
+        log_assert(wb->wire->port_input);
         dBit = DriverBit(wb->wire, wb->bit);
       } else {
         // See if the driver is a cell output port (represented by a cell/portname)
-        CellPortBit *cpb = getDrivingCell(bit);
+        CellPortBit *cpb = getDrivingCell(canonicalBit);
         if (cpb) {
           dBit = DriverBit(cpb->cell, cpb->port, cpb->bit);
         } else {
           // No connection!
+          log_assert(false);
           dBit = DriverBit(RTLIL::State::Sx);
         }
       }
