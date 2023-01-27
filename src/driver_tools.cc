@@ -1521,6 +1521,8 @@ void DriverFinder::build(RTLIL::Module *mod)
 
   sigmap.set(module);
 
+  // Process every bit of every cell output
+  
   for (auto cell : module->cells()) {
     for (auto& conn : cell->connections()) {
       // conn.first is the signal IdString, conn.second is its SigSpec
@@ -1530,21 +1532,39 @@ void DriverFinder::build(RTLIL::Module *mod)
         //my_log_debug_sigspec(conn.second);
         //log_debug("\ncanonical: ");
         //my_log_debug_sigspec(canonical_sig);
-        int idx = 0;
+        int idx = -1;
         for (auto& bit : canonical_sig.to_sigbit_vector()) {
+          ++idx;
           // sigmap(conn.second) is the canonical SigSpec.
           // bit is a canonical SigBit
           //log_debug("  ");
           //my_log_debug_sigbit(bit);
-          log_assert(bit.is_wire());  // A cell can't drive a constant!
+
+          // A cell can't drive a constant!
+          if (!bit.is_wire()) {
+            log_error("Cell %s output %s bit %d is driving a constant %d\n",
+                        cell->name.c_str(), conn.first.c_str(), idx, bit.data);
+          }
+
+          if (canonical_sigbit_to_driving_wire_table.count(bit) != 0) { //tmp
+            log("Multi-driven bit!:\n");
+            my_log_sigbit(bit);
+            log("Driven by %s %d and cell output %s %d\n",
+                      canonical_sigbit_to_driving_wire_table[bit].wire->name.c_str(),
+                      canonical_sigbit_to_driving_wire_table[bit].bit,
+                      conn.first.c_str(), idx);
+            log_flush();
+          }
+
           log_assert(canonical_sigbit_to_driving_cell_table.count(bit) == 0);
           canonical_sigbit_to_driving_cell_table.emplace(bit, CellPortBit{cell, conn.first, idx});
-          ++idx;
         }
       }
     }
   }
 
+  // Process every bit of every top-level input port
+  
   for (auto wire : module->wires()) {
     if (wire->port_input) {
       RTLIL::SigSpec canonical_sig = sigmap(wire);
@@ -1552,13 +1572,32 @@ void DriverFinder::build(RTLIL::Module *mod)
       my_log_debug_wire(wire);
       log_debug("\ncanonical sigspec:\n");
       my_log_debug_sigspec(canonical_sig);
-      int idx = 0;
+      int idx = -1;
       for (auto& bit : canonical_sig.to_sigbit_vector()) {
+        ++idx;
         // sigmap(wire) is the canonical SigSpec.
         // bit is a canonical SigBit
-        log_assert(canonical_sigbit_to_driving_wire_table.count(bit) == 0);  // Multi-driven?
+
+        if (!bit.is_wire()) {
+          // This can legitimately happen, if a bit of a register in the original
+          // design is permanently set to 0  (e.g. RISC-V program counter).
+          log_warning("Input port %s bit %d is driving a constant %d\n",
+                      wire->name.c_str(), idx, bit.data);
+          continue;
+        }
+
+        if (canonical_sigbit_to_driving_wire_table.count(bit) != 0) { 
+          log("Multi-driven bit!:\n");
+          my_log_sigbit(bit);
+          log("Driven by %s %d and %s %d\n",
+                    canonical_sigbit_to_driving_wire_table[bit].wire->name.c_str(),
+                    canonical_sigbit_to_driving_wire_table[bit].bit,
+                    wire->name.c_str(), idx);
+          log_flush();
+        }
+
+        log_assert(canonical_sigbit_to_driving_wire_table.count(bit) == 0);  // Multi-driven
         canonical_sigbit_to_driving_wire_table.emplace(bit, WireBit{wire, idx});
-        ++idx;
       }
     }
   }

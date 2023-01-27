@@ -389,76 +389,141 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
 }
 
 
+
+// Add the mux needed to model a FF's SRST or CE signal.  Return the added mux
+// cell.  The mux B input gets whatever is connected to the FF D pin, and the
+// mux Y is left unconnected.  The mux A input gets a_sig, and the mux S input
+// gets s_sig, possibly with an added inverter.
+
+RTLIL::Cell*
+wire_up_mux(RTLIL::Module* mod, FfData& ff, RTLIL::SigSpec a_sig,
+            RTLIL::SigSpec s_sig, bool invert_s)
+{
+
+  log_assert(a_sig.size() == ff.width);
+
+  RTLIL::Cell *mux = mod->addCell(mod->uniquify(ff.name.str()+"_mux"), ID($mux));
+  log_debug("Added mux %s\n", mux->name.c_str());
+  mux->setParam(ID::WIDTH, ff.width);
+
+  // Connect the signal driving the D pin to the B input of the mux
+  mux->setPort(ID::B, ff.sig_d);
+
+  // Connect the provided value to the mux A input.
+  mux->setPort(ID::A, a_sig);
+
+  if (invert_s) {
+    RTLIL::Cell *inv = mod->addCell(mod->uniquify(ff.name.str()+"_mux_inv"), ID($not));
+    log_debug("Added mux inverter %s\n", inv->name.c_str());
+    inv->setParam(ID::A_WIDTH, 1);
+    inv->setParam(ID::Y_WIDTH, 1);
+    inv->setParam(ID::A_SIGNED, 0);
+
+    // Provided signal goes to inverter input
+    inv->setPort(ID::A, s_sig);
+
+    // Add a wire to connect the inverter and mux
+    RTLIL::Wire *w_inv = mod->addWire(mod->uniquify(ff.name.str()+"_mux_inv"), 1);
+
+    // Wire connects inverter output to mux S input
+    inv->setPort(ID::Y, w_inv);
+    mux->setPort(ID::S, w_inv);
+    
+  } else {
+    // Provided signal goes directly to mux S input
+    mux->setPort(ID::S, s_sig);
+  }
+
+  return mux;
+}
+
+
 // Add the logic needed to model a FF's SRST signal.
-// Return the AND gate that implements the reset
+// Return the cell (AND gate or mux) that implements the reset
 RTLIL::Cell*
 wire_up_srst(RTLIL::Module* mod, FfData& ff,
              RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
 {
   log_debug("Wire up srst\n");
-  // To model the reset, add an inverter and an AND gate between D and Q
-  // Negative resets don't need the inverter.
-  RTLIL::Cell *and_gate = mod->addCell(mod->uniquify(ff.name.str()+"_srst_and"), ID($and));
-  log_debug("Adding srst AND %s\n", and_gate->name.c_str());
-  and_gate->setParam(ID::A_WIDTH, ff.width);
-  and_gate->setParam(ID::B_WIDTH, ff.width);
-  and_gate->setParam(ID::Y_WIDTH, ff.width);
-  and_gate->setParam(ID::A_SIGNED, 0);
-  and_gate->setParam(ID::B_SIGNED, 0);
 
-  // Connect the signal driving the D pin to the B input of the AND gate
-  and_gate->setPort(ID::B, ff.sig_d);
+  // We can use an AND gate if the cell is reset to sero.
+  // Otherwise we need a mux with the reset value at one input.
 
-  // We use an AND gate because we assume the cell is reset to sero.
-  // Otherwise we need a mux with a constant at one input.
-  log_assert(ff.val_srst.is_fully_zero());
+  RTLIL::Cell *reset_gate = nullptr;
 
-  if (ff.pol_srst) {
-    // Positive reset needs an inverter
-    RTLIL::Cell *inv = mod->addCell(mod->uniquify(ff.name.str()+"_srst_inv"), ID($not));
-    log_debug("Adding srst inverter %s\n", inv->name.c_str());
-    inv->setParam(ID::A_WIDTH, 1);
-    inv->setParam(ID::Y_WIDTH, 1);
-    inv->setParam(ID::A_SIGNED, 0);
+  if (ff.val_srst.is_fully_zero()) {
 
-    // Positive reset goes to inverter input
-    inv->setPort(ID::A, ff.sig_srst);
+    // To model the reset, add an inverter and an AND gate between D and Q
+    // Negative resets don't need the inverter.
+    reset_gate = mod->addCell(mod->uniquify(ff.name.str()+"_srst_and"), ID($and));
+    log_debug("Added srst AND %s\n", reset_gate->name.c_str());
+    reset_gate->setParam(ID::A_WIDTH, ff.width);
+    reset_gate->setParam(ID::B_WIDTH, ff.width);
+    reset_gate->setParam(ID::Y_WIDTH, ff.width);
+    reset_gate->setParam(ID::A_SIGNED, 0);
+    reset_gate->setParam(ID::B_SIGNED, 0);
 
-    // Add a wire to connect the inverter and AND gate
-    RTLIL::Wire *w_inv = mod->addWire(mod->uniquify(ff.name.str()+"_srst_inv"), 1);
+    // Connect the signal driving the D pin to the B input of the AND gate
+    reset_gate->setPort(ID::B, ff.sig_d);
 
-    // Wire connects inverter output to AND gate B input
-    inv->setPort(ID::Y, w_inv);
+    if (ff.pol_srst) {
+      // Positive reset needs an inverter
+      RTLIL::Cell *inv = mod->addCell(mod->uniquify(ff.name.str()+"_srst_inv"), ID($not));
+      log_debug("Added srst inverter %s\n", inv->name.c_str());
+      inv->setParam(ID::A_WIDTH, 1);
+      inv->setParam(ID::Y_WIDTH, 1);
+      inv->setParam(ID::A_SIGNED, 0);
 
-    // If the AND gate is wider than 1 bit, we need to concatenate
-    // N copies of the control signal
-    RTLIL::SigBit sigbit(w_inv);
-    std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
-    RTLIL::SigSpec widened_w_inv(sigbits);
+      // Positive reset goes to inverter input
+      inv->setPort(ID::A, ff.sig_srst);
 
-    and_gate->setPort(ID::A, widened_w_inv);
-    
+      // Add a wire to connect the inverter and AND gate
+      RTLIL::Wire *w_inv = mod->addWire(mod->uniquify(ff.name.str()+"_srst_inv"), 1);
+
+      // Wire connects inverter output to AND gate B input
+      inv->setPort(ID::Y, w_inv);
+
+      // If the AND gate is wider than 1 bit, we need to concatenate
+      // N copies of the control signal
+      RTLIL::SigBit sigbit(w_inv);
+      std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
+      RTLIL::SigSpec widened_w_inv(sigbits);
+
+      reset_gate->setPort(ID::A, widened_w_inv);
+      
+    } else {
+      // Negative reset goes directly to B input (duplicated if width > 1)
+
+      RTLIL::SigBit sigbit(ff.sig_srst);
+      std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
+      RTLIL::SigSpec widened_srst(sigbits);
+
+      reset_gate->setPort(ID::A, widened_srst);
+    }
+
   } else {
-    // Negative reset goes directly to B input (duplicated if width > 1)
 
-    RTLIL::SigBit sigbit(ff.sig_srst);
-    std::vector<RTLIL::SigBit> sigbits(ff.width, sigbit);
-    RTLIL::SigSpec widened_srst(sigbits);
+    // In this case, model the reset by adding a mux between D and Q.
+    // Positive resets need an inverter before the mux S input.  We could
+    // avoid the inverter by instead switching the mux A and B inputs, but the
+    // caller expects the mux B input to have the data signal.  The mux A
+    // input of course gets the reset value.
 
-    and_gate->setPort(ID::A, widened_srst);
+    reset_gate = wire_up_mux(mod, ff, ff.val_srst, ff.sig_srst, ff.pol_srst);
+    log_debug("Added srst mux %s\n", reset_gate->name.c_str());
   }
 
-  // Lastly we need a stub wire from the AND gate output which
+  // Lastly we need a stub wire from the gate output which
   // will send the signal to the next cycle
 
   RTLIL::Wire *w_d = mod->addWire(mod->uniquify(ff.name.str()+"_gated_d"), ff.width);
-  and_gate->setPort(ID::Y, w_d);
+  reset_gate->setPort(ID::Y, w_d);
 
   // Return the modified D and Q connections to the caller.
   to_D = w_d;
   from_Q = ff.sig_q;
 
-  return and_gate;
+  return reset_gate;
 }
 
 
@@ -468,23 +533,12 @@ wire_up_ce(RTLIL::Module* mod, FfData& ff,
                   RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
 {
   log_debug("Wire up ce\n");
+
   // To model the enable, add a mux between D and Q
   // Keep in mind the ce signal polarity
-  RTLIL::Cell *mux = mod->addCell(mod->uniquify(ff.name.str()+"_ce_mux"), ID($mux));
-  log_debug("Adding srst mux %s\n", mux->name.c_str());
-  mux->setParam(ID::WIDTH, ff.width);
 
-  if (ff.pol_ce) {
-    // Positive enable
-    mux->setPort(ID::A, ff.sig_q);  // enable=0, previous stage signal is passed through
-    mux->setPort(ID::B, ff.sig_d);  // enable=1, FF gets normal input
-  } else {
-    // Negative enable, opposite situation
-    mux->setPort(ID::A, ff.sig_d);  
-    mux->setPort(ID::B, ff.sig_q); 
-  }
-
-  mux->setPort(ID::S, ff.sig_ce);   // Mux select
+  RTLIL::Cell *mux = wire_up_mux(mod, ff, ff.sig_q, ff.sig_ce, !ff.pol_ce);
+  log_debug("Added ce mux %s\n", mux->name.c_str());
 
   // Lastly we need a stub wire from the mux output which
   // will send the signal to the next cycle
