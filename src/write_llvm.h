@@ -23,11 +23,16 @@ private:
     public:
       void add(llvm::Value*value, const DriverSpec& driver);
       llvm::Value *find(const DriverSpec& driver);
-      void clear() { _dict.clear(); }
+      void clear() { _dict.clear(); _nHits = 0; _nMisses = 0; }
       size_t size() { return _dict.size(); }
+      size_t nHits() const { return _nHits; }
+      size_t nMisses() const { return _nMisses; }
 
     private:
       Yosys::dict<DriverSpec, llvm::Value*> _dict;
+
+      size_t _nHits = 0;
+      size_t _nMisses = 0;
   };
 
 
@@ -51,6 +56,8 @@ private:
   // More useful
   llvm::ConstantInt *llvmZero(unsigned width);
 
+  llvm::PoisonValue *llvmPoison(unsigned width);
+  llvm::UndefValue *llvmUndef(unsigned width);
 
 
   // Find or create a Value representing what drives the given input port of the given cell.

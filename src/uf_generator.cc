@@ -109,8 +109,8 @@ YosysUFGenerator::applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& s
   mod->rename(origPort, newName);
 
   RTLIL::Wire *newPort = nullptr;
-  if (!ss.is_fully_const() && !forceRemove) {
-    // Make a new port only if it is useful and wanted
+  if (!ss.is_fully_def() && !forceRemove) {
+    // Make a new port only if it is useful (ss has some 'x's) and wanted
     newPort = mod->addWire(origName, origPort->width);
 
     // The new port takes over the old port's status
@@ -380,11 +380,16 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
     // Re-optimize.  Since we have set a lot of constants on input ports,
     // a lot of simplification can be done.
     if (m_do_opto) {
-      log("Re-optimizing...\n");
+      log("Optimizing unrolled module...\n");
       log_push();
       Pass::call_on_module(m_des, unrolledMod, "opt");
       Pass::call_on_module(m_des, unrolledMod, "stat");
       log_pop();
+    }
+
+    if (ys_debug) {
+      std::string rtlilFileName = instr_name+"_unrolled_"+std::to_string(num_cycles)+".rtlil";
+      Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+rtlilFileName);
     }
   }
 
@@ -403,8 +408,6 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   my_log_wire(targetPort);
   
   log_header(m_des, "Writing LLVM data...\n");
-
-  Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+fileName+".rtlil");
 
   LLVMWriter writer;
   writer.write_llvm_ir(unrolledMod, targetPort, origModName,

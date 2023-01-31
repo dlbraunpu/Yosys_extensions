@@ -107,10 +107,24 @@ LLVMWriter::llvmZero(unsigned width)
 }
 
 
+llvm::PoisonValue *
+LLVMWriter::llvmPoison(unsigned width)
+{
+  return llvm::PoisonValue::get(llvmWidth(width));
+}
+
+
+llvm::UndefValue *
+LLVMWriter::llvmUndef(unsigned width)
+{
+  return llvm::UndefValue::get(llvmWidth(width));
+}
+
+
+
 void
 LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
 {
-
   if (_dict.find(driver) != _dict.end()) {
     // Already there
     log_warning("Repeated calculation of Value for driverspec:\n");
@@ -132,8 +146,10 @@ LLVMWriter::ValueCache::find(const DriverSpec& driver)
 {
   auto pos = _dict.find(driver);
   if (pos == _dict.end())  {
+    ++_nMisses;
     return nullptr;
   }
+  ++_nHits;
   return pos->second;
 }
 
@@ -365,17 +381,25 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 
   if (cell->type == ID($and)) {
     // A common case with FF srst signals: an AND gate has a true input,
-    // but opt refuses to delete the cell.  BTW CreateAnd() does this
+    // but opt refuses to delete the cell.  BTW CreateAnd() will do the
     // same optimization, but only if the RHS is all ones!
+    // Generatlly the binary operators prefer that a constant be the second
+    // operand.
     if (isAllOnes(valA)) {
       return valB;
-    } else if (isAllOnes(valB)) {
-      return valA;
+    } else if (isZero(valA)) {
+      return llvmZero(valWidthA);
+    } else if (isZero(valB)) {
+      return llvmZero(valWidthB);
     } else {
       return b->CreateAnd(valA, valB);
     }
   } else if (cell->type == ID($or)) {
-    return b->CreateOr(valA, valB);
+    if (isZero(valA)) {
+      return valB;
+    } else {
+      return b->CreateOr(valA, valB);
+    }
   } else if (cell->type == ID($xor)) {
     return b->CreateXor(valA, valB);
   } else if (cell->type == ID($xnor)) {
@@ -389,8 +413,14 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   } else if (cell->type == ID($sshr)) {
     return b->CreateAShr(valA, valB);
   } else if (cell->type == ID($logic_and)) {
-    return b->CreateAnd(b->CreateICmpNE(valA, llvmZero(valWidthA)),
-                        b->CreateICmpNE(valB, llvmZero(valWidthB)));
+    if (isZero(valA) || isZero(valB)) {
+      return llvmZero(1);
+    } else {
+      // Yosys tends to create $logic_and cells with a constant on A,
+      // so make that the second operand to LLVM CreateAnd().
+      return b->CreateAnd(b->CreateICmpNE(valB, llvmZero(valWidthB)),
+                          b->CreateICmpNE(valA, llvmZero(valWidthA)));
+    }
   } else if (cell->type == ID($logic_or)) {
     return b->CreateOr(b->CreateICmpNE(valA, llvmZero(valWidthA)),
                         b->CreateICmpNE(valB, llvmZero(valWidthB)));
@@ -424,7 +454,7 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
     // TODO: See above about logic operators with Y width > 1
   } 
 
-  log_warning("Unsupported binary cell %s\n", cell->type.c_str());
+  log_error("Unsupported binary cell %s\n", cell->type.c_str());
   return valA;
 }
 
@@ -600,7 +630,7 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
             } else if (cell->type == ID($pmux)) {
               val = generatePmuxCellOutputValue(cell);
             } else {
-              log_warning("Unsupported %s cell %s\n",
+              log_error("Unsupported %s cell %s\n",
                           cell->type.c_str(), cell->name.c_str());
               val = generateInputValue(cell, ID::A);  // Fallback
             }
@@ -650,18 +680,20 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
     std::string valStr = chunk.as_string();
     log_assert(valStr.size() == (long unsigned)chunk.size());
 
-    // Check for unwanted x
-    for (char& ch : valStr) {
-      if (ch != '0' && ch != '1') {
-        log_warning("x-ish driver chunk found: %s\n", valStr.c_str());
-        break;
-      }
-    }
 
-    // Clean up. TODO: Be more clever about mapping 'x' to either 0 or 1,
-    // with the goal of simplifying the logic.
-    for (char& ch : valStr) {
-      if (ch != '0' && ch != '1') ch = '0';
+    if (DriverSpec(chunk).is_fully_undef() && totalWidth == chunk.size()) {
+      log_assert(offset == 0);
+      log_warning("All-x driver chunk found: %s\n", valStr.c_str());
+      return llvmPoison(totalWidth); // Let LLVM deal with it
+
+    } else if (!DriverSpec(chunk).is_fully_def()) {
+      log_warning("Partial-x driver chunk found: %s width %d\n", valStr.c_str(), totalWidth);
+
+      // Clean up. TODO: Be more clever about mapping 'x' to either 0 or 1,
+      // with the goal of simplifying the logic.
+      for (char& ch : valStr) {
+        if (ch != '0' && ch != '1') ch = '0';
+      }
     }
 
     if (offset > 0) {
@@ -677,9 +709,43 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
     return llvm::ConstantInt::get(llvmWidth(totalWidth), llvm::StringRef(valStr), 2 /*radix*/);
   }
 
-  // OK, we have a slice of a wire or cell output.
+  // OK, the chunk is a slice of a wire or cell output.
 
-  // See if we already have a Value for this object slice
+  if (offset == chunk.offset) {
+    // The signal bits do not need to be shifted - we just have to zero-extend
+    // or truncate it, and maybe zero out some low-order bits.
+    // A typical exmaple: { \reg_next_pc___#1_ [31:2], 2'h0 }
+
+    // Find or make a Value for the entire wire or cell output
+    DriverSpec objDs = chunk.wire ? DriverSpec(chunk.wire) : DriverSpec(chunk.cell, chunk.port);
+    log_assert(objDs.is_cell() || objDs.is_wire());
+    llvm::Value *objVal = generateValue(objDs);  // Will be added to valueCache
+
+    // Adjust its width
+    llvm::Value *val = b->CreateZExtOrTrunc(objVal, llvmWidth(totalWidth));
+
+    // Mask off the low-order bits as required
+    if (offset > 0) {
+      // TODO: It would be more elegant to use llvm::APInt...
+      std::string maskStr = std::string((totalWidth - offset), '1') +
+                            std::string(offset, '0');
+
+      llvm::ConstantInt *mask = llvm::ConstantInt::get(llvmWidth(totalWidth),
+                                  llvm::StringRef(maskStr), 2 /*radix*/);
+
+      val =  b->CreateAnd(val, mask);
+    }
+
+    // TODO: Is it worth adding this to the valueCache?  It would be necessary
+    // to create a relatively complex temporary DriverSpec to serve as the key.
+
+    return val;
+  } 
+
+  // The more general case: the signal data needs to be shifted
+  // TODO: This can be simplified!
+
+  // See if we already have a Value for this (non-offset) object slice
   DriverSpec tmpDs(chunk);
   llvm::Value *val = valueCache.find(tmpDs);
 
@@ -756,17 +822,21 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     return val;
 
   } else if (dSpec.is_fully_const()) {
-    // valStr will be like "01101011010".
+    // valStr will be of the form [01xzm-]*
     std::string valStr = dSpec.as_const().as_string();
 
     // Ideally there would not be explicit 'x' values here!
     // The optimization and cleanup already done should have gotten rid of most of them.
-    if (!dSpec.is_fully_def()) {
-      log_warning("x-ish driver spec found: %s\n", valStr.c_str());
+
+    if (dSpec.is_fully_undef()) {
+      log_warning("All-x driver spec found: %s\n", valStr.c_str());
+      return llvmPoison(dSpec.size());   // Let LLVM deal with it.
+    } else if (!dSpec.is_fully_def()) {
+      log_warning("Partial-x driver spec found: %s\n", valStr.c_str());
 
       // Clean up.
       for (char& ch : valStr) {
-        if (ch == 'x') ch = '0'; 
+        if (ch != '0' && ch != '1') ch = '0';
       }
     }
 
@@ -796,12 +866,15 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     // Multiple chunks: OR them all together
     llvm::Value *val = nullptr;
     for (llvm::Value* v : values) {
-      if (!val) {
-        val = v;
-      } else {
-        val = b->CreateOr(val, v);
+      if (!isZero(v)) {
+        if (!val) {
+          val = v;
+        } else {
+          val = b->CreateOr(val, v);
+        }
       }
     }
+    log_assert(val);  // Multiple zero chunks?
 
     valueCache.add(val, dSpec);
     return val;
@@ -922,7 +995,8 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   llvm::Value *destValue = generateValue(dSpec);
   b->CreateRet(destValue);
 
-  log_debug("%lu Values in valueCache\n", valueCache.size());
+  log("%lu Values in valueCache\n", valueCache.size());
+  log("%lu hits, %lu misses\n", valueCache.nHits(), valueCache.nMisses());
 
   llvm::verifyFunction(*func);
   llvm::verifyModule(*llvmMod);
