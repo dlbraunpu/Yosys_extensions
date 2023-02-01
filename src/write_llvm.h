@@ -64,6 +64,7 @@ private:
   llvm::Value *generateInputValue(Yosys::RTLIL::Cell *cell,
                                   Yosys::RTLIL::IdString port);
 
+  llvm::Value *createOptimizedAnd(llvm::Value *valA, llvm::Value *valB);
 
   // Helpers for generateCellOutputValue() below
   llvm::Value *generateUnaryCellOutputValue(Yosys::RTLIL::Cell *cell);

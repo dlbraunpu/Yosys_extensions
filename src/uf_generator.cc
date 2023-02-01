@@ -377,19 +377,25 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
     log("New unrolled module %s will be created.\n", id2cstr(unrolledModName));
     unrolledMod = makeUnrolledModule(unrolledModName, m_srcmod, instrInfo, num_cycles);
 
+    if (ys_debug()) {
+      std::string rtlilFileName = instr_name+"_unrolled_"+std::to_string(num_cycles)+".rtlil";
+      Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+rtlilFileName);
+    }
+
     // Re-optimize.  Since we have set a lot of constants on input ports,
     // a lot of simplification can be done.
     if (m_do_opto) {
       log("Optimizing unrolled module...\n");
       log_push();
-      Pass::call_on_module(m_des, unrolledMod, "opt");
+      Pass::call_on_module(m_des, unrolledMod, "opt -mux_bool");
+      Pass::call_on_module(m_des, unrolledMod, "opt_clean -purge");  // Removes all unused wires
       Pass::call_on_module(m_des, unrolledMod, "stat");
       log_pop();
-    }
 
-    if (ys_debug) {
-      std::string rtlilFileName = instr_name+"_unrolled_"+std::to_string(num_cycles)+".rtlil";
-      Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+rtlilFileName);
+      if (ys_debug()) {
+        std::string rtlilFileName = instr_name+"_unrolled_opto_"+std::to_string(num_cycles)+".rtlil";
+        Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+rtlilFileName);
+      }
     }
   }
 

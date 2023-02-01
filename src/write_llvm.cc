@@ -49,6 +49,7 @@ LLVMWriter::reset()
 
 
 
+// Return true iff val is a Constant with a zero value.
 static bool
 isZero(llvm::Value *val)
 {
@@ -60,6 +61,7 @@ isZero(llvm::Value *val)
 
 
 
+// Return true iff val is a Constant with an all-ones value.
 static bool
 isAllOnes(llvm::Value *val)
 {
@@ -168,6 +170,35 @@ LLVMWriter::generateInputValue(RTLIL::Cell *cell, RTLIL::IdString port)
   return generateValue(dSpec);
 }
 
+
+// AND gates are created in several situations, so this is handy.
+llvm::Value *
+LLVMWriter::createOptimizedAnd(llvm::Value *valA, llvm::Value *valB)
+{
+  return b->CreateAnd(valA, valB);  // TMP
+
+  // A common case with FF srst signals: an AND gate has a true input, but opt
+  // refuses to delete the cell.  BTW the latest LLVM CreateAnd() will do
+  // these optimizations, but only if the RHS is constant!  Generally the
+  // binary operators prefer that a constant be the second operand.
+
+  unsigned width = valA->getType()->getIntegerBitWidth();
+  log_assert(width == valB->getType()->getIntegerBitWidth());
+
+  if (isAllOnes(valA)) {
+    return valB;
+  } else if (isZero(valA)) {
+    return llvmZero(width);
+  } else if (isZero(valB)) {
+    return llvmZero(width);
+  } else if (isAllOnes(valA)) {
+    return valB;
+  } else if (isAllOnes(valB)) {
+    return valA;
+  } else {
+    return b->CreateAnd(valA, valB);
+  }
+}
 
 
 // Return true if the given celltype
@@ -380,23 +411,13 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   log_assert(valWidthB == workingWidth);
 
   if (cell->type == ID($and)) {
-    // A common case with FF srst signals: an AND gate has a true input,
-    // but opt refuses to delete the cell.  BTW CreateAnd() will do the
-    // same optimization, but only if the RHS is all ones!
-    // Generatlly the binary operators prefer that a constant be the second
-    // operand.
-    if (isAllOnes(valA)) {
-      return valB;
-    } else if (isZero(valA)) {
-      return llvmZero(valWidthA);
-    } else if (isZero(valB)) {
-      return llvmZero(valWidthB);
-    } else {
-      return b->CreateAnd(valA, valB);
-    }
+    return createOptimizedAnd(valA, valB);
   } else if (cell->type == ID($or)) {
+    return b->CreateOr(valA, valB); // TMP
     if (isZero(valA)) {
       return valB;
+    } else if (isZero(valB)) {
+      return valA;
     } else {
       return b->CreateOr(valA, valB);
     }
@@ -416,14 +437,12 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
     if (isZero(valA) || isZero(valB)) {
       return llvmZero(1);
     } else {
-      // Yosys tends to create $logic_and cells with a constant on A,
-      // so make that the second operand to LLVM CreateAnd().
-      return b->CreateAnd(b->CreateICmpNE(valB, llvmZero(valWidthB)),
-                          b->CreateICmpNE(valA, llvmZero(valWidthA)));
+      return b->CreateLogicalAnd(b->CreateICmpNE(valA, llvmZero(valWidthA)),
+                                 b->CreateICmpNE(valB, llvmZero(valWidthB)));
     }
   } else if (cell->type == ID($logic_or)) {
-    return b->CreateOr(b->CreateICmpNE(valA, llvmZero(valWidthA)),
-                        b->CreateICmpNE(valB, llvmZero(valWidthB)));
+    return b->CreateLogicalOr(b->CreateICmpNE(valA, llvmZero(valWidthA)),
+                              b->CreateICmpNE(valB, llvmZero(valWidthB)));
 
     // TODO: $eqx, etc.  $pos
 
@@ -459,12 +478,17 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 }
 
 
-
+#if 1
 // Create a Value representing the output port of the given 3-input mux cell.
+// Unoptimized version
 llvm::Value *
 LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 {
   log_assert(cell->type == ID($mux));
+
+  log_debug("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
+      cell->name.c_str(), cell->getPort(ID::Y).size());
+  log_flush();
 
   // See the above rant on widths...
   // Muxes have only WIDTH attribute, applies to A/B/Y
@@ -475,49 +499,133 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   unsigned sigWidthS = (unsigned)(cell->getPort(ID::S).size());  // Size of SigSpec
   unsigned sigWidthY = (unsigned)(cell->getPort(ID::Y).size());  // Size of SigSpec
 
+  log_assert(sigWidthA == cellWidth);
+  log_assert(sigWidthB == cellWidth);
+  log_assert(sigWidthY == cellWidth);
+  log_assert(sigWidthS == 1);
+
   // Muxes apparently do not have SIGNED attributes.
 
   // Create or find the Values at the cell inputs
-  llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  unsigned valWidthA = valA->getType()->getIntegerBitWidth();
-
-  llvm::Value *valB = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-  unsigned valWidthB = valB->getType()->getIntegerBitWidth();
-
   llvm::Value *valS = generateInputValue(cell, ID::S);
   unsigned valWidthS = valS->getType()->getIntegerBitWidth();
+  log_assert(valWidthS == 1);
+
+  llvm::Value *trueVal = nullptr;
+  unsigned trueValWidth = 0;
+
+  trueVal = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
+  trueValWidth = trueVal->getType()->getIntegerBitWidth();
+
+  if (trueValWidth != cellWidth) {
+    trueVal = b->CreateZExtOrTrunc(trueVal, llvmWidth(cellWidth));
+    trueValWidth = trueVal->getType()->getIntegerBitWidth();
+  }
+  log_assert(trueValWidth == cellWidth);
+
+  llvm::Value *falseVal = nullptr;
+  unsigned falseValWidth = 0;
+
+  falseVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
+  falseValWidth = falseVal->getType()->getIntegerBitWidth();
+
+  if (falseValWidth != cellWidth) {
+    falseVal = b->CreateZExtOrTrunc(falseVal, llvmWidth(cellWidth));
+    falseValWidth = falseVal->getType()->getIntegerBitWidth();
+  }
+  log_assert(falseValWidth == cellWidth);
+
+  log_assert(trueVal && falseVal);
+  return b->CreateSelect(valS, trueVal, falseVal);
+}
+
+#else
+
+// Create a Value representing the output port of the given 3-input mux cell.
+llvm::Value *
+LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
+{
+  log_assert(cell->type == ID($mux));
 
   log_debug("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
       cell->name.c_str(), cell->getPort(ID::Y).size());
   log_flush();
 
-  // TODO: Sanity check: pin widths match driver/load widths.
+  // See the above rant on widths...
+  // Muxes have only WIDTH attribute, applies to A/B/Y
+  unsigned cellWidth = (unsigned)(cell->parameters[ID::WIDTH].as_int());
+
+  unsigned sigWidthA = (unsigned)(cell->getPort(ID::A).size());  // Size of SigSpec
+  unsigned sigWidthB = (unsigned)(cell->getPort(ID::B).size());  // Size of SigSpec
+  unsigned sigWidthS = (unsigned)(cell->getPort(ID::S).size());  // Size of SigSpec
+  unsigned sigWidthY = (unsigned)(cell->getPort(ID::Y).size());  // Size of SigSpec
 
   log_assert(sigWidthA == cellWidth);
   log_assert(sigWidthB == cellWidth);
   log_assert(sigWidthY == cellWidth);
   log_assert(sigWidthS == 1);
 
+  // Muxes apparently do not have SIGNED attributes.
+
+  // Create or find the Values at the cell inputs
+  llvm::Value *valS = generateInputValue(cell, ID::S);
+  unsigned valWidthS = valS->getType()->getIntegerBitWidth();
+  log_assert(valWidthS == 1);
+
+  // WARNING: Yosys and LLVM have opposite definitions of the A and B signals!
+  // The Yosys cell's A signal is the "false" value and the B signal is the
+  // "true" value.  But llvm's createSelect() function is defined like this:
+  //   CreateSelect(Value *C, Value *True, Value *False);
+
+  // If S is a constant zero or one, simply generate and return the A or B input.
+  // Theoretically Yosys optimizations would get rid of such things, but
+  // apparently not always.
+
+  // TODO: Sanity check: pin widths match driver/load widths.
+
   // If A or B widths are different than their connections, zero
   // or sign-extend the input data.  No \SIGNED attributes to consider.
   // I have observed A/B input signals WIDER than the cell width
-  if (valWidthA != cellWidth) {
-    valA = b->CreateZExtOrTrunc(valA, llvmWidth(cellWidth));
-    valWidthA = valA->getType()->getIntegerBitWidth();
+
+  llvm::Value *trueVal = nullptr;
+  unsigned trueValWidth = 0;
+
+  if (!isZero(valS)) {
+    trueVal = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
+    trueValWidth = trueVal->getType()->getIntegerBitWidth();
+
+    if (trueValWidth != cellWidth) {
+      trueVal = b->CreateZExtOrTrunc(trueVal, llvmWidth(cellWidth));
+      trueValWidth = trueVal->getType()->getIntegerBitWidth();
+    }
+    log_assert(trueValWidth == cellWidth);
   }
 
-  if (valWidthB != cellWidth) {
-    valB = b->CreateZExtOrTrunc(valB, llvmWidth(cellWidth));
-    valWidthB = valB->getType()->getIntegerBitWidth();
+  llvm::Value *falseVal = nullptr;
+  unsigned falseValWidth = 0;
+
+  if (!isAllOnes(valS)) {
+    falseVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
+    falseValWidth = falseVal->getType()->getIntegerBitWidth();
+
+    if (falseValWidth != cellWidth) {
+      falseVal = b->CreateZExtOrTrunc(falseVal, llvmWidth(cellWidth));
+      falseValWidth = falseVal->getType()->getIntegerBitWidth();
+    }
+    log_assert(falseValWidth == cellWidth);
   }
 
-  log_assert(valWidthA == cellWidth);
-  log_assert(valWidthB == cellWidth);
-  log_assert(valWidthS == 1);
+  if (isAllOnes(valS)) {
+    return trueVal;
+  } else if (isZero(valS)) {
+    return falseVal;
+  }
 
-  return b->CreateSelect(valS, valA, valB);
+  log_assert(trueVal && falseVal);
+  return b->CreateSelect(valS, trueVal, falseVal);
 }
 
+#endif
 
 
 // Create a Value representing the output port of the given 3-input pmux cell.
@@ -649,7 +757,7 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
   // function args.
   if (llvm::isa<llvm::Instruction>(val) && val->getName().empty() && outputSig.is_wire()) {
     RTLIL::IdString valName = outputSig.as_wire()->name;
-    if (valName[0] != '$') {
+    if (true || valName[0] != '$') { // TMP
       val->setName(internalToLLVM(valName));
     }
   }
@@ -733,7 +841,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
       llvm::ConstantInt *mask = llvm::ConstantInt::get(llvmWidth(totalWidth),
                                   llvm::StringRef(maskStr), 2 /*radix*/);
 
-      val =  b->CreateAnd(val, mask);
+      val = createOptimizedAnd(val, mask);
     }
 
     // TODO: Is it worth adding this to the valueCache?  It would be necessary
@@ -874,7 +982,11 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
         }
       }
     }
-    log_assert(val);  // Multiple zero chunks?
+
+    if (!val) {
+      // All zero chunks
+      return values[0];
+    }
 
     valueCache.add(val, dSpec);
     return val;
