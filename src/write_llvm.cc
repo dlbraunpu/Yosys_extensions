@@ -31,9 +31,9 @@
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 
-LLVMWriter::LLVMWriter()
+LLVMWriter::LLVMWriter(const Options &options) 
 {
-
+  opts = options;
 }
 
 LLVMWriter::~LLVMWriter()
@@ -173,10 +173,17 @@ LLVMWriter::generateInputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 
 // AND gates are created in several situations, so this is handy.
 llvm::Value *
-LLVMWriter::createOptimizedAnd(llvm::Value *valA, llvm::Value *valB)
+LLVMWriter::generateAndCellOutputValue(llvm::Value *valA, llvm::Value *valB)
 {
-  return b->CreateAnd(valA, valB);  // TMP
+  if (opts.simplify_and_or_gates) {
+    return generateSimplifiedAndCellOutputValue(valA, valB);  
+  }
+  return b->CreateAnd(valA, valB);  
+}
 
+
+llvm::Value *
+LLVMWriter::generateSimplifiedAndCellOutputValue(llvm::Value *valA, llvm::Value *valB) {
   // A common case with FF srst signals: an AND gate has a true input, but opt
   // refuses to delete the cell.  BTW the latest LLVM CreateAnd() will do
   // these optimizations, but only if the RHS is constant!  Generally the
@@ -411,10 +418,11 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   log_assert(valWidthB == workingWidth);
 
   if (cell->type == ID($and)) {
-    return createOptimizedAnd(valA, valB);
+    return generateAndCellOutputValue(valA, valB);
   } else if (cell->type == ID($or)) {
-    return b->CreateOr(valA, valB); // TMP
-    if (isZero(valA)) {
+    if (!opts.simplify_and_or_gates) {
+      return b->CreateOr(valA, valB); 
+    } else if (isZero(valA)) {
       return valB;
     } else if (isZero(valB)) {
       return valA;
@@ -478,12 +486,14 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 }
 
 
-#if 1
 // Create a Value representing the output port of the given 3-input mux cell.
-// Unoptimized version
 llvm::Value *
 LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 {
+  if (opts.simplify_muxes) {
+    return generateSimplifiedMuxCellOutputValue(cell);
+  }
+
   log_assert(cell->type == ID($mux));
 
   log_debug("generateMuxCellOutputValue(): cell port %s Y width %d:\n",
@@ -511,11 +521,8 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   unsigned valWidthS = valS->getType()->getIntegerBitWidth();
   log_assert(valWidthS == 1);
 
-  llvm::Value *trueVal = nullptr;
-  unsigned trueValWidth = 0;
-
-  trueVal = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-  trueValWidth = trueVal->getType()->getIntegerBitWidth();
+  llvm::Value *trueVal = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
+  unsigned trueValWidth = trueVal->getType()->getIntegerBitWidth();
 
   if (trueValWidth != cellWidth) {
     trueVal = b->CreateZExtOrTrunc(trueVal, llvmWidth(cellWidth));
@@ -523,11 +530,8 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   }
   log_assert(trueValWidth == cellWidth);
 
-  llvm::Value *falseVal = nullptr;
-  unsigned falseValWidth = 0;
-
-  falseVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  falseValWidth = falseVal->getType()->getIntegerBitWidth();
+  llvm::Value *falseVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
+  unsigned falseValWidth = falseVal->getType()->getIntegerBitWidth();
 
   if (falseValWidth != cellWidth) {
     falseVal = b->CreateZExtOrTrunc(falseVal, llvmWidth(cellWidth));
@@ -539,11 +543,12 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   return b->CreateSelect(valS, trueVal, falseVal);
 }
 
-#else
 
 // Create a Value representing the output port of the given 3-input mux cell.
+// Avoid actually creating a select instruction if inputs
+// are constants, etc.
 llvm::Value *
-LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
+LLVMWriter::generateSimplifiedMuxCellOutputValue(RTLIL::Cell *cell)
 {
   log_assert(cell->type == ID($mux));
 
@@ -625,7 +630,6 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   return b->CreateSelect(valS, trueVal, falseVal);
 }
 
-#endif
 
 
 // Create a Value representing the output port of the given 3-input pmux cell.
@@ -751,19 +755,22 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 
   // TODO: Do any necessary width adjustments to result here?
 
-  // If the new Value is an Instruction driving a single wire, name it
-  // after that wire, if the wire's name is not auto-generated. But don't
-  // re-name things, and don't try to name non-Instructions, especially
-  // function args.
+  // If the new Value is an Instruction driving a single wire, optionally give
+  // it an explicit name.  But don't re-name things, and don't try to name
+  // non-Instructions, especially function args.  Depending on options
+  // settings, the name (if any) will be based on the cell or wire name.
+  // BTW, cell names are mostly auto-generated, not user-defined.
+
   if (llvm::isa<llvm::Instruction>(val) && val->getName().empty() && outputSig.is_wire()) {
-    RTLIL::IdString valName = outputSig.as_wire()->name;
-    if (true || valName[0] != '$') { // TMP
+    RTLIL::IdString valName = opts.cell_based_llvm_value_names ? cell->name :
+                                outputSig.as_wire()->name;
+    if (opts.verbose_llvm_value_names || valName[0] != '$') { 
+      // Default: use only user defined wire names
       val->setName(internalToLLVM(valName));
     }
   }
 
   return val;
-
 }
 
 
@@ -792,7 +799,11 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
     if (DriverSpec(chunk).is_fully_undef() && totalWidth == chunk.size()) {
       log_assert(offset == 0);
       log_warning("All-x driver chunk found: %s\n", valStr.c_str());
-      return llvmPoison(totalWidth); // Let LLVM deal with it
+      if (opts.use_poison) {
+        return llvmPoison(totalWidth);
+      } else {
+        return llvmZero(totalWidth);
+      }
 
     } else if (!DriverSpec(chunk).is_fully_def()) {
       log_warning("Partial-x driver chunk found: %s width %d\n", valStr.c_str(), totalWidth);
@@ -841,7 +852,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
       llvm::ConstantInt *mask = llvm::ConstantInt::get(llvmWidth(totalWidth),
                                   llvm::StringRef(maskStr), 2 /*radix*/);
 
-      val = createOptimizedAnd(val, mask);
+      val = generateAndCellOutputValue(val, mask);
     }
 
     // TODO: Is it worth adding this to the valueCache?  It would be necessary
@@ -938,7 +949,11 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
 
     if (dSpec.is_fully_undef()) {
       log_warning("All-x driver spec found: %s\n", valStr.c_str());
-      return llvmPoison(dSpec.size());   // Let LLVM deal with it.
+      if (opts.use_poison) {
+        return llvmPoison(dSpec.size());
+      } else {
+        return llvmZero(dSpec.size());
+      }
     } else if (!dSpec.is_fully_def()) {
       log_warning("Partial-x driver spec found: %s\n", valStr.c_str());
 

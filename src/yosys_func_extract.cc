@@ -62,7 +62,7 @@ struct FuncExtractCmd : public Pass {
   {
     //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
     log("\n");
-    log("    func_extract <instruction> <asv>... [options]\n");
+    log("    func_extract [options]\n");
     log("\n");
     log("Generate an ILA update function for a particular instruction and ASV(s)\n");
     log("\n");
@@ -76,8 +76,16 @@ struct FuncExtractCmd : public Pass {
     taintGen::g_verb = false;
 
     bool write_llvm = true;
-    bool do_opto = true;
     bool read_rst = true;
+
+    YosysUFGenerator::Options ufGenOpts;
+    ufGenOpts.save_unrolled = false;
+    ufGenOpts.optimize_unrolled = true;
+    ufGenOpts.verbose_llvm_value_names = false;
+    ufGenOpts.cell_based_llvm_value_names = false;
+    ufGenOpts.simplify_and_or_gates = true;
+    ufGenOpts.simplify_muxes = true;
+    ufGenOpts.use_poison = false;
 
     size_t argidx;
     for (argidx = 1; argidx < args.size(); argidx++) {
@@ -85,8 +93,20 @@ struct FuncExtractCmd : public Pass {
       
       if (arg == "-no_write_llvm") {
         write_llvm = false;
-      } else if (arg == "-no_opto") {
-        do_opto = false;
+      } else if (arg == "-save_unrolled") {
+        ufGenOpts.save_unrolled = true;
+      } else if (arg == "-no_optimize_unrolled") {
+        ufGenOpts.optimize_unrolled = false;
+      } else if (arg == "-use_poison") {
+        ufGenOpts.use_poison = true;
+      } else if (arg == "-no_simplify_gates") {
+        ufGenOpts.simplify_and_or_gates = false;
+      } else if (arg == "-no_simplify_muxes") {
+        ufGenOpts.simplify_muxes = false;
+      } else if (arg == "-verbose_names") {
+        ufGenOpts.verbose_llvm_value_names = true;
+      } else if (arg == "-cell_based_names") {
+        ufGenOpts.cell_based_llvm_value_names = true;
       } else if (arg == "-no_rst") {
         read_rst = false;
       } else if (arg == "-path" && argidx < args.size()-1) {
@@ -106,6 +126,14 @@ struct FuncExtractCmd : public Pass {
     // instruction encodings, write/read ASV, NOP
     funcExtract::read_in_instructions(taintGen::g_path+"/instr.txt");
 
+    RTLIL::IdString srcmodname = verilogToInternal(taintGen::g_topModule);
+    log("Specified top module: %s\n", id2cstr(srcmodname));
+
+    RTLIL::Module *srcmod = design->module(srcmodname);
+    if (!srcmod) {
+      log_cmd_error("No such module: %s  Did you load the design?\n", id2cstr(srcmodname));
+    }
+
     // Read target ASVs and reset data
     funcExtract::read_allowed_targets(taintGen::g_path+"/allowed_target.txt");
 
@@ -115,33 +143,24 @@ struct FuncExtractCmd : public Pass {
       log_warning("rst.vcd will not be read - non-ASV registers will be initialized to zero.\n");
     }
 
-    RTLIL::IdString srcmodname = verilogToInternal(taintGen::g_topModule);
-    RTLIL::Module *srcmod = design->module(srcmodname);
-    if (!srcmod) {
-      log_cmd_error("No such source module: %s\n", id2cstr(srcmodname));
-    }
 
     design->sort();
 
     if (!srcmod->processes.empty()) {
-      log_error("Module %s contains unmapped RTLIL processes.\n"
-                "Run the Yosys 'proc' command before this command.\n", id2cstr(srcmodname));
+      log_warning("Module %s contains unmapped RTLIL processes.\n"
+                "Running the Yosys 'proc' command to remove them...\n", id2cstr(srcmodname));
+      log_push();
+      Pass::call(design, "proc");
+      log_pop();
+      design->sort();
     }
-
-    // Write_verilog does these...
-#if 0
-    log_push();
-    Pass::call(design, "bmuxmap");
-    Pass::call(design, "demuxmap");
-    Pass::call(design, "clean_zerowidth");
-    log_pop();
-#endif
 
 
     // Make an implementation of a UFGenFactory that provides
     // instances of YosysUFGenerator, which generates LLVM
-    // based on the Yosys in-memory design
-    YosysUFGenFactory factory(srcmod, do_opto);
+    // based on the Yosys in-memory design.
+    // Pass in necessary option settings.
+    YosysUFGenFactory factory(srcmod, ufGenOpts);
 
     // Make an implementation of ModuleInfo that funcExtract::FuncExtractFlow
     // needs to look up design data.

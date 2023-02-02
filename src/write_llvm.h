@@ -17,6 +17,29 @@
 
 class LLVMWriter {
 
+public:
+
+  struct Options {
+    bool verbose_llvm_value_names = false;
+    bool cell_based_llvm_value_names = true;
+    bool simplify_and_or_gates = true;
+    bool simplify_muxes = true;
+    bool use_poison = false;
+  };
+
+  LLVMWriter(const Options& options);
+  ~LLVMWriter();
+
+  void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
+                     Yosys::RTLIL::Wire *targetPort,
+                     std::string modName, 
+                     std::string instrName,
+                     std::string targetName,
+                     std::string llvmFileName,
+                     std::string funcName);
+
+  void reset();
+
 private:
 
   class ValueCache {
@@ -40,10 +63,9 @@ private:
   std::shared_ptr<llvm::LLVMContext> c;
   std::shared_ptr<llvm::Module> llvmMod;
 
-
-
   ValueCache valueCache;
   DriverFinder finder;
+  Options opts;
 
 
   llvm::IntegerType *llvmWidth(unsigned a);
@@ -64,11 +86,12 @@ private:
   llvm::Value *generateInputValue(Yosys::RTLIL::Cell *cell,
                                   Yosys::RTLIL::IdString port);
 
-  llvm::Value *createOptimizedAnd(llvm::Value *valA, llvm::Value *valB);
-
   // Helpers for generateCellOutputValue() below
+  llvm::Value *generateSimplifiedAndCellOutputValue(llvm::Value *valA, llvm::Value *valB);
+  llvm::Value *generateAndCellOutputValue(llvm::Value *valA, llvm::Value *valB);
   llvm::Value *generateUnaryCellOutputValue(Yosys::RTLIL::Cell *cell);
   llvm::Value *generateBinaryCellOutputValue(Yosys::RTLIL::Cell *cell);
+  llvm::Value *generateSimplifiedMuxCellOutputValue(Yosys::RTLIL::Cell *cell);
   llvm::Value *generateMuxCellOutputValue(Yosys::RTLIL::Cell *cell);
   llvm::Value *generatePmuxCellOutputValue(Yosys::RTLIL::Cell *cell);
 
@@ -99,20 +122,6 @@ private:
   generateFunctionDecl(const std::string& funcName, Yosys::RTLIL::Module *mod,
                        Yosys::RTLIL::Wire *targetPort);
 
-
-public:
-  LLVMWriter();
-  ~LLVMWriter();
-
-  void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
-                     Yosys::RTLIL::Wire *targetPort,
-                     std::string modName, 
-                     std::string instrName,
-                     std::string targetName,
-                     std::string llvmFileName,
-                     std::string funcName);
-
-  void reset();
 
 };
 

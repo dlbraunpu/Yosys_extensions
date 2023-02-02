@@ -12,7 +12,17 @@
 
 class YosysUFGenerator : public funcExtract::UFGenerator {
 public:
-  YosysUFGenerator(Yosys::RTLIL::Module *srcmod, bool do_opto);
+  struct Options {
+    bool save_unrolled = false;
+    bool optimize_unrolled = true;
+    bool verbose_llvm_value_names = false;
+    bool cell_based_llvm_value_names = true;
+    bool simplify_and_or_gates = true;
+    bool simplify_muxes = true;
+    bool use_poison = false;
+  };
+
+  YosysUFGenerator(Yosys::RTLIL::Module *srcmod, const Options& opts);
   YosysUFGenerator() = delete;
   ~YosysUFGenerator();
 
@@ -39,7 +49,7 @@ private:
 
   Yosys::RTLIL::Design *m_des;
   Yosys::RTLIL::Module *m_srcmod;
-  bool m_do_opto;
+  Options m_opts;
 
 };
 
@@ -48,18 +58,19 @@ private:
 class YosysUFGenFactory : public funcExtract::UFGenFactory {
 
 public:
-  YosysUFGenFactory(Yosys::RTLIL::Module *srcmod, bool do_opto) :
-      m_srcmod(srcmod), m_do_opto(do_opto) {}
+  YosysUFGenFactory(Yosys::RTLIL::Module *srcmod,
+                    const YosysUFGenerator::Options& opts) :
+      m_srcmod(srcmod), m_opts(opts) {}
 
   std::shared_ptr<funcExtract::UFGenerator> makeGenerator() override
   {
     return std::shared_ptr<funcExtract::UFGenerator>(
-        new YosysUFGenerator(m_srcmod, m_do_opto));
+        new YosysUFGenerator(m_srcmod, m_opts));
   }
 
 private:
   Yosys::RTLIL::Module *m_srcmod;
-  bool m_do_opto;
+  YosysUFGenerator::Options m_opts;
 };
 
 

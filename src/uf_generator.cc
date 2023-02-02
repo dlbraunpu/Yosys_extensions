@@ -21,11 +21,11 @@
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 
-YosysUFGenerator::YosysUFGenerator(RTLIL::Module *srcmod, bool do_opto)
+YosysUFGenerator::YosysUFGenerator(RTLIL::Module *srcmod, const Options& opts)
 {
   m_srcmod = srcmod;
   m_des = srcmod->design;
-  m_do_opto = do_opto;
+  m_opts = opts;
 }
 
 
@@ -267,7 +267,7 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
 
   // Doing opto here gives little improvement
 #if 0
-  if (m_do_opto) {
+  if (m_opts.optimize_unrolled) {
     // Optimize
     log("Optimizing...\n");
     log_push();
@@ -377,14 +377,16 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
     log("New unrolled module %s will be created.\n", id2cstr(unrolledModName));
     unrolledMod = makeUnrolledModule(unrolledModName, m_srcmod, instrInfo, num_cycles);
 
-    if (ys_debug()) {
+    if (m_opts.save_unrolled) {
       std::string rtlilFileName = instr_name+"_unrolled_"+std::to_string(num_cycles)+".rtlil";
+      log_push();
       Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+rtlilFileName);
+      log_pop();
     }
 
     // Re-optimize.  Since we have set a lot of constants on input ports,
     // a lot of simplification can be done.
-    if (m_do_opto) {
+    if (m_opts.optimize_unrolled) {
       log("Optimizing unrolled module...\n");
       log_push();
       Pass::call_on_module(m_des, unrolledMod, "opt -mux_bool");
@@ -392,9 +394,11 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
       Pass::call_on_module(m_des, unrolledMod, "stat");
       log_pop();
 
-      if (ys_debug()) {
+      if (m_opts.save_unrolled) {
         std::string rtlilFileName = instr_name+"_unrolled_opto_"+std::to_string(num_cycles)+".rtlil";
+        log_push();
         Pass::call_on_module(m_des, unrolledMod, "write_rtlil -selected "+rtlilFileName);
+        log_pop();
       }
     }
   }
@@ -415,7 +419,15 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   
   log_header(m_des, "Writing LLVM data...\n");
 
-  LLVMWriter writer;
+  LLVMWriter::Options llvmOpts;
+  llvmOpts.verbose_llvm_value_names = m_opts.verbose_llvm_value_names;
+  llvmOpts.cell_based_llvm_value_names = m_opts.cell_based_llvm_value_names;
+  llvmOpts.simplify_and_or_gates = m_opts.simplify_and_or_gates;
+  llvmOpts.simplify_muxes = m_opts.simplify_muxes;
+  llvmOpts.use_poison = m_opts.use_poison;
+
+
+  LLVMWriter writer(llvmOpts);
   writer.write_llvm_ir(unrolledMod, targetPort, origModName,
                        instr_name, targetName, fileName, funcName);
   log("LLVM result written to %s\n", fileName.c_str());
