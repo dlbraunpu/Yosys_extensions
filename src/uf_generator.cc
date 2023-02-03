@@ -237,18 +237,53 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
       id2cstr(srcmod->name), id2cstr(unrolledModName), num_cycles);
   unroll_module(srcmod, unrolledMod, num_cycles);
 
-  // Make into output ports the final-cycle (num_cycles+1) signals that represent ASVs.
-  // Typically these are the from_Q signals created by unroll_module().
+  // Make into output ports the final-cycle (num_cycles+1) signals that
+  // represent ASVs.  Typically these are the from_Q signals created by
+  // unroll_module(). TODO: If we really need to control the ordering of the 
+  // update function arguments, this is a good place to do that.
+
+  // Start with the members of ASV register arrays.  Also set attributes on
+  // these ports to indicate which position of which array they belong to.
+  // The array names get a cycle number, to be consistent with the original
+  // func_extract.  Note that the target vector arrays are NOT Yosys objects,
+  // so their names are simple strings.
+
+  for (auto pair: funcExtract::g_allowedTgtVec) {
+    std::string vecName = funcExtract::timed_name(pair.first, 1);
+    int idx = -1;
+    for (const std::string& member : pair.second.members) {
+      ++idx;
+      RTLIL::IdString portname = cycleize_name(member, num_cycles+1);
+      RTLIL::Wire *port = unrolledMod->wire(portname);
+      if (port) {
+        port->port_output = true;
+        // Annotate the port with the original target ASV name and
+        // its vector information.
+        port->set_string_attribute(TARGET_ATTR, member);
+        port->set_string_attribute(TARGET_VECTOR_ATTR, vecName);
+        port->set_string_attribute(TARGET_VECTOR_IDX_ATTR, std::to_string(idx));
+      } else {
+        log_warning("Cannot find unrolled final-cycle signal for register array ASV %s\n",
+                    member.c_str());
+        continue;
+      }
+    }
+  }
+
+  // Now do the regular ASVs.
   for (auto pair : funcExtract::g_allowedTgt) {
     RTLIL::IdString portname = cycleize_name(pair.first, num_cycles+1);
     RTLIL::Wire *port = unrolledMod->wire(portname);
     if (port) {
       port->port_output = true;
+      // Annotate the port with the original target ASV name.
+      port->set_string_attribute(TARGET_ATTR, pair.first);
     } else {
       log_warning("Cannot find unrolled final-cycle signal for ASV %s\n", pair.first.c_str());
       continue;
     }
   }
+
   unrolledMod->fixup_ports();  // Necessary since we added ports
 
   log("Unrolled module statistics:\n");
@@ -288,11 +323,26 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
     RTLIL::IdString portname = cycleize_name(pair.first, 1);
     RTLIL::Wire *port = unrolledMod->wire(portname);
     if (!port || !port->port_input) {
-      log_warning("Cannot find unrolled first-cycle ASV input port %s\n", portname.c_str());
+      log_warning("Cannot find unrolled first-cycle input port for ASV %s\n", portname.c_str());
       continue;
     }
     processedPorts.insert(port);
   }
+
+  // Same thing for members of ASV register arrays
+  for (auto pair: funcExtract::g_allowedTgtVec) {
+    for (const std::string& member : pair.second.members) {
+      RTLIL::IdString portname = cycleize_name(member, 1);
+      RTLIL::Wire *port = unrolledMod->wire(portname);
+      if (!port || !port->port_input) {
+        log_warning("Cannot find unrolled first-cycle input port for register array ASV %s\n",
+                    portname.c_str());
+        continue;
+      }
+      processedPorts.insert(port);
+    }
+  }
+
   unrolledMod->fixup_ports();  // Necessary since we added and removed ports
 
   // Apply any reset values as needed to input ports for cycle #1.
@@ -428,8 +478,8 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
 
 
   LLVMWriter writer(llvmOpts);
-  writer.write_llvm_ir(unrolledMod, targetPort, origModName,
-                       instr_name, targetName, fileName, funcName);
+  writer.write_llvm_ir(unrolledMod, targetName, false, origModName,
+                      num_cycles, fileName, funcName);
   log("LLVM result written to %s\n", fileName.c_str());
 
 }

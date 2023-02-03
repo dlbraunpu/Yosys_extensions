@@ -4,6 +4,7 @@
 // LLVM headers needed below
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/Value.h"
 
 // Without this, yosys.h gets confused by the above LLVM headers.  Strange!!!
@@ -31,12 +32,12 @@ public:
   ~LLVMWriter();
 
   void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
-                     Yosys::RTLIL::Wire *targetPort,
-                     std::string modName, 
-                     std::string instrName,
-                     std::string targetName,
-                     std::string llvmFileName,
-                     std::string funcName);
+                      std::string targetName,  // As specified in allowed_target.txt
+                      bool targetIsVec,       // target is ASV vector
+                      std::string modName,  // from original Verilog, e.g. "M8080"
+                      int num_cycles,
+                      std::string llvmFileName,
+                      std::string funcName);
 
   void reset();
 
@@ -44,7 +45,7 @@ private:
 
   class ValueCache {
     public:
-      void add(llvm::Value*value, const DriverSpec& driver);
+      void add(llvm::Value *value, const DriverSpec& driver);
       llvm::Value *find(const DriverSpec& driver);
       void clear() { _dict.clear(); _nHits = 0; _nMisses = 0; }
       size_t size() { return _dict.size(); }
@@ -62,6 +63,7 @@ private:
   std::shared_ptr<llvm::IRBuilder<>> b;
   std::shared_ptr<llvm::LLVMContext> c;
   std::shared_ptr<llvm::Module> llvmMod;
+  llvm::Function *llvmFunc;  // function being generated
 
   ValueCache valueCache;
   DriverFinder finder;
@@ -81,10 +83,19 @@ private:
   llvm::PoisonValue *llvmPoison(unsigned width);
   llvm::UndefValue *llvmUndef(unsigned width);
 
+  unsigned getWidth(llvm::Value *val);
+
+  // Generate a value for a primary input 
+  llvm::Value *generatePrimaryInputValue(Yosys::RTLIL::Wire *port);
 
   // Find or create a Value representing what drives the given input port of the given cell.
   llvm::Value *generateInputValue(Yosys::RTLIL::Cell *cell,
                                   Yosys::RTLIL::IdString port);
+
+  llvm::Value* generateLoad(llvm::Value *array, unsigned elementWidth, unsigned idx,
+                             Yosys::RTLIL::IdString valueName);
+
+  void generateStore(llvm::Value *array, unsigned idx, llvm::Value *val);
 
   // Helpers for generateCellOutputValue() below
   llvm::Value *generateSimplifiedAndCellOutputValue(llvm::Value *valA, llvm::Value *valB);
@@ -117,10 +128,10 @@ private:
   // The wire represents a target ASV, and is not NOT necessarily a port
   llvm::Value *generateDestValue(Yosys::RTLIL::Wire *wire);
 
-
   llvm::Function*
   generateFunctionDecl(const std::string& funcName, Yosys::RTLIL::Module *mod,
-                       Yosys::RTLIL::Wire *targetPort);
+                       const Yosys::dict<std::string, unsigned>& targetVectors,
+                       int retWidth);
 
 
 };

@@ -72,6 +72,17 @@ IdString cycleize_name(const std::string& name, int cycle)
 }
 
 
+// Doug: translate the idScring to verilog, then remove any trailing "__#<cycle>_".
+// The goal to to take a cycleized Yosys name and recover the original Verilog
+// name.
+std::string decycleize_name(IdString object_name)
+{
+  std::string v_name = internalToV(object_name);
+  //std::pair<std::string, std::pair<uint32_t, std::string>>
+  auto pair = funcExtract::parse_name_idx(v_name);
+  return pair.first;
+}
+
 
 
 // Truncate or zero-extend the SigSpec as necessary to make it the given width.

@@ -17,16 +17,26 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/IR/ValueSymbolTable.h"
 
 // Yosys headers
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
 #include "backends/rtlil/rtlil_backend.h"
 
+
+// Unfortunately including func_extract/src/util.h triggers the nasty "#define ID" issue.
+namespace funcExtract {
+  uint32_t get_padded_width(uint32_t width);
+
+  // From func_extract/src/global_data_struct.h
+  constexpr const char *RETURN_ARRAY_PTR_ID = "*RETURN_ARRAY_PTR*";  
+}
+
+
 #include "util.h"
 #include "driver_tools.h"
 
-// This file has no dependencies on anything in autoGenILA/src/func_extract
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
@@ -123,6 +133,12 @@ LLVMWriter::llvmUndef(unsigned width)
 }
 
 
+unsigned
+LLVMWriter::getWidth(llvm::Value *val)
+{
+  return val->getType()->getIntegerBitWidth();
+}
+
 
 void
 LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
@@ -153,6 +169,71 @@ LLVMWriter::ValueCache::find(const DriverSpec& driver)
   }
   ++_nHits;
   return pos->second;
+}
+
+
+// Generate code to load a Value from the given index of the given array.
+// Used for accessing ASVs in register arrays.
+// Post LLVM 14, pointers are untyped, so we do not try to deduce
+// the element size from the array pointer type.  Plus, there may be padding.
+// valueName will be applied to the resulting Value, so it can be
+// referred to in the generated code.
+
+llvm::Value*
+LLVMWriter::generateLoad(llvm::Value *array, unsigned elementWidth, unsigned idx,
+             RTLIL::IdString valueName)
+{
+  std::string name = internalToV(valueName);
+
+  uint32_t paddedWidth = funcExtract::get_padded_width(elementWidth);
+
+  llvm::Type *paddedElementTy = llvmWidth(paddedWidth);
+
+  uint32_t idxBitwidth = 32;  // LLVM optimization just switches this to i64...
+
+  // Add a GetElementPtr instruction to calculate the address
+  llvm::Value* gep = b->CreateGEP(
+          paddedElementTy,
+          array,
+          std::vector<llvm::Value*> {
+              llvm::ConstantInt::get(llvmWidth(idxBitwidth), idx, false) },
+          name+"_addr");
+
+  if (paddedWidth == elementWidth) {
+    // No width issues: create a load instruction with the correct name.
+    return b->CreateLoad(paddedElementTy, gep, name);
+  } else {
+    // De-padding necessary: create a load followed by a trunc instruction with the correct name.
+    // Note that CreateZExtOrTrunc() will ignore the supplied name and simply return the
+    // input value if no conversion is needed.
+    llvm::Value *paddedVal = b->CreateLoad(paddedElementTy, gep);
+    llvm::Type *elementTy = llvmWidth(elementWidth);
+    return b->CreateTrunc(paddedVal, elementTy, name);
+  }
+}
+
+
+// Similar to above, but to store to array.  There is no Value to return.
+void
+LLVMWriter::generateStore(llvm::Value *array, unsigned idx, llvm::Value *val)
+{
+
+  uint32_t paddedWidth = funcExtract::get_padded_width(getWidth(val));
+  llvm::Type *paddedElementTy = llvmWidth(paddedWidth);
+  uint32_t idxBitwidth = 32;  // LLVM optimization just switches this to i64...
+
+  // Add a GetElementPtr instruction to calculate the address
+  llvm::Value* gep = b->CreateGEP(
+          paddedElementTy,
+          array,
+          std::vector<llvm::Value*> {
+              llvm::ConstantInt::get(llvmWidth(idxBitwidth), idx, false) },
+          val->getName().str()+"_addr");
+
+  // If no width conversion is needed, no zext or trunc instruction will be generated here.
+  llvm::Value *paddedVal = b->CreateZExtOrTrunc(val, paddedElementTy);
+
+  b->CreateStore(paddedVal, gep);
 }
 
 
@@ -189,8 +270,8 @@ LLVMWriter::generateSimplifiedAndCellOutputValue(llvm::Value *valA, llvm::Value 
   // these optimizations, but only if the RHS is constant!  Generally the
   // binary operators prefer that a constant be the second operand.
 
-  unsigned width = valA->getType()->getIntegerBitWidth();
-  log_assert(width == valB->getType()->getIntegerBitWidth());
+  unsigned width = getWidth(valA);
+  log_assert(width == getWidth(valB));
 
   if (isAllOnes(valA)) {
     return valB;
@@ -256,7 +337,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
 
   // Create or find the Value at the cell input
   llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  unsigned valWidthA = valA->getType()->getIntegerBitWidth();
+  unsigned valWidthA = getWidth(valA);
 
   bool isReduce = isReductionCell(cell->type);
 
@@ -282,7 +363,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   if (valWidthA < workingWidth) {
     valA = signedA ? b->CreateSExtOrTrunc(valA, llvmWidth(workingWidth)) :
                      b->CreateZExtOrTrunc(valA, llvmWidth(workingWidth));
-    valWidthA = valA->getType()->getIntegerBitWidth();
+    valWidthA = getWidth(valA);
   }
 
   if (!isReduce && cellWidthY != cellWidthA) {
@@ -358,10 +439,10 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
 
   // Create or find the Values at the cell inputs
   llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  unsigned valWidthA = valA->getType()->getIntegerBitWidth();
+  unsigned valWidthA = getWidth(valA);
 
   llvm::Value *valB = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-  unsigned valWidthB = valB->getType()->getIntegerBitWidth();
+  unsigned valWidthB = getWidth(valB);
 
   bool isReduce = isReductionCell(cell->type);
 
@@ -405,13 +486,13 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   if (valWidthA < workingWidth) {
     valA = signedA ? b->CreateSExtOrTrunc(valA, llvmWidth(workingWidth)) :
                      b->CreateZExtOrTrunc(valA, llvmWidth(workingWidth));
-    valWidthA = valA->getType()->getIntegerBitWidth();
+    valWidthA = getWidth(valA);
   }
 
   if (valWidthB < workingWidth) {
     valB = signedB ? b->CreateSExtOrTrunc(valB, llvmWidth(workingWidth)) :
                      b->CreateZExtOrTrunc(valB, llvmWidth(workingWidth));
-    valWidthB = valB->getType()->getIntegerBitWidth();
+    valWidthB = getWidth(valB);
   }
 
   log_assert(valWidthA == workingWidth);
@@ -518,24 +599,24 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
 
   // Create or find the Values at the cell inputs
   llvm::Value *valS = generateInputValue(cell, ID::S);
-  unsigned valWidthS = valS->getType()->getIntegerBitWidth();
+  unsigned valWidthS = getWidth(valS);
   log_assert(valWidthS == 1);
 
   llvm::Value *trueVal = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-  unsigned trueValWidth = trueVal->getType()->getIntegerBitWidth();
+  unsigned trueValWidth = getWidth(trueVal);
 
   if (trueValWidth != cellWidth) {
     trueVal = b->CreateZExtOrTrunc(trueVal, llvmWidth(cellWidth));
-    trueValWidth = trueVal->getType()->getIntegerBitWidth();
+    trueValWidth = getWidth(trueVal);
   }
   log_assert(trueValWidth == cellWidth);
 
   llvm::Value *falseVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  unsigned falseValWidth = falseVal->getType()->getIntegerBitWidth();
+  unsigned falseValWidth = getWidth(falseVal);
 
   if (falseValWidth != cellWidth) {
     falseVal = b->CreateZExtOrTrunc(falseVal, llvmWidth(cellWidth));
-    falseValWidth = falseVal->getType()->getIntegerBitWidth();
+    falseValWidth = getWidth(falseVal);
   }
   log_assert(falseValWidth == cellWidth);
 
@@ -574,7 +655,7 @@ LLVMWriter::generateSimplifiedMuxCellOutputValue(RTLIL::Cell *cell)
 
   // Create or find the Values at the cell inputs
   llvm::Value *valS = generateInputValue(cell, ID::S);
-  unsigned valWidthS = valS->getType()->getIntegerBitWidth();
+  unsigned valWidthS = getWidth(valS);
   log_assert(valWidthS == 1);
 
   // WARNING: Yosys and LLVM have opposite definitions of the A and B signals!
@@ -597,11 +678,11 @@ LLVMWriter::generateSimplifiedMuxCellOutputValue(RTLIL::Cell *cell)
 
   if (!isZero(valS)) {
     trueVal = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-    trueValWidth = trueVal->getType()->getIntegerBitWidth();
+    trueValWidth = getWidth(trueVal);
 
     if (trueValWidth != cellWidth) {
       trueVal = b->CreateZExtOrTrunc(trueVal, llvmWidth(cellWidth));
-      trueValWidth = trueVal->getType()->getIntegerBitWidth();
+      trueValWidth = getWidth(trueVal);
     }
     log_assert(trueValWidth == cellWidth);
   }
@@ -611,11 +692,11 @@ LLVMWriter::generateSimplifiedMuxCellOutputValue(RTLIL::Cell *cell)
 
   if (!isAllOnes(valS)) {
     falseVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-    falseValWidth = falseVal->getType()->getIntegerBitWidth();
+    falseValWidth = getWidth(falseVal);
 
     if (falseValWidth != cellWidth) {
       falseVal = b->CreateZExtOrTrunc(falseVal, llvmWidth(cellWidth));
-      falseValWidth = falseVal->getType()->getIntegerBitWidth();
+      falseValWidth = getWidth(falseVal);
     }
     log_assert(falseValWidth == cellWidth);
   }
@@ -665,13 +746,13 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 
   // Create or find the Values at the cell inputs
   llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  unsigned valWidthA = valA->getType()->getIntegerBitWidth();
+  unsigned valWidthA = getWidth(valA);
 
   llvm::Value *valB = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-  unsigned valWidthB = valB->getType()->getIntegerBitWidth();
+  unsigned valWidthB = getWidth(valB);
 
   llvm::Value *valS = generateInputValue(cell, ID::S);
-  unsigned valWidthS = valS->getType()->getIntegerBitWidth();
+  unsigned valWidthS = getWidth(valS);
 
   // Unique characteristic of pmux cells
   unsigned cellWidthB = cellWidthAY * cellWidthS;
@@ -884,7 +965,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
 
     // Truncate the value if necessary
     log_assert (chunk.width <= chunk.object_width() - chunk.offset); // Basic sanity check
-    if ((unsigned)chunk.width != val->getType()->getIntegerBitWidth()) {
+    if ((unsigned)chunk.width != getWidth(val)) {
       val = b->CreateZExtOrTrunc(val, llvmWidth(chunk.width));
     }
 
@@ -902,7 +983,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
   }
 
   // Extend before shifting!
-  if ((unsigned)totalWidth != val->getType()->getIntegerBitWidth()) {
+  if ((unsigned)totalWidth != getWidth(val)) {
     val = b->CreateZExtOrTrunc(val, llvmWidth(totalWidth));
   }
 
@@ -917,20 +998,60 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
 }
 
 
+// Generate a value for a top-level input port.  These correspond
+// to either LLVM function parameters (for regular ASVs) or elements
+// of a ASV vector.
+
+llvm::Value *
+LLVMWriter::generatePrimaryInputValue(RTLIL::Wire *port)
+{
+  assert (port->port_input);
+  std::string argname = internalToV(port->name);
+  llvm::Value *val = nullptr;
+
+  if (!port->has_attribute(TARGET_VECTOR_ATTR)) {
+    // A regular ASV that is supposed to have a function argument.
+    // Simply find the correct arg.
+    val = llvmFunc->getValueSymbolTable()->lookup(argname);
+
+  } else {
+    // Get the correct array and index from attributes we previously set on the port,
+    // and generate a load instruction to get its value.
+    std::string arrayName = port->get_string_attribute(TARGET_VECTOR_ATTR);
+    int idx = std::stoi(port->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
+    unsigned width = port->width;
+
+    // Find the function arg that is the pointer to the array.
+    llvm::Value *array = llvmFunc->getValueSymbolTable()->lookup(arrayName);
+    log_assert(array);
+
+    val = generateLoad(array, width, idx, argname);
+  }
+
+  log_assert(val);
+  return val;
+}
+
+
+// Generate the Value for the given Driverspec.  This function
+// may recursively call lots of other stuff.
+
 llvm::Value *
 LLVMWriter::generateValue(const DriverSpec& dSpec)
 {
   llvm::Value *val = valueCache.find(dSpec);
   if (val) {
-    return val;  // Should normally be the case for wires
+    return val;  // Should often be the case.
   }
 
   if (dSpec.is_wire()) {
-    // An entire wire, representing a module input port.
-    // Their values should have been pre-created as function args
-    // and already be in the valueCache.
-    log_assert(false);
-    return nullptr;
+    // An entire wire, which is supposed to represent a module input port.
+    log_debug("generateValue for primary input port\n");
+    log_debug_driverspec(dSpec);
+
+    llvm::Value *val = generatePrimaryInputValue(dSpec.as_wire());
+    valueCache.add(val, dSpec);
+    return val;
 
   } else if (dSpec.is_cell()) {
     // An entire cell output.
@@ -1033,22 +1154,53 @@ LLVMWriter::generateDestValue(RTLIL::Wire *wire)
 
 llvm::Function*
 LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod,
-                                 RTLIL::Wire *targetPort)
+                                 const Yosys::dict<std::string, unsigned>& targetVectors,
+                                 int retWidth) // Zero for void, negative for array
 {
   std::vector<llvm::Type *> argTy;
 
-  // Add every module input port, which includes the first-cycle ASV inputs
-  // and the unrolled copies of the original input ports.
+  // Add every module input port, which includes the first-cycle register inputs
+  // and the unrolled versions of the original input ports.
   for (RTLIL::IdString portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
     log_assert(port);
-    if (port->port_input) {
-      argTy.push_back(llvmWidth(port->width));
+    // Skip ASVs in register arrays.
+    if (!port->has_attribute(TARGET_VECTOR_ATTR)) {
+      if (port->port_input) {
+        argTy.push_back(llvmWidth(port->width));
+      }
     }
   }
 
-  // A return type of the correct width
-  llvm::Type* retTy = llvmWidth(targetPort->width);
+  // Push the types of any register array args (which are of course pointers)
+  for(auto vecNameWidth: targetVectors) {
+    unsigned width = vecNameWidth.second;
+
+    // The array element width is the padded width of the vector's elements!
+    // Note that in LLVM 14, all pointers will be untyped, so we won't need
+    // the width here.
+    uint32_t paddedWidth = funcExtract::get_padded_width(width);
+    llvm::Type *paddedArrayElementTy = llvmWidth(paddedWidth);
+    argTy.push_back(llvm::PointerType::getUnqual(paddedArrayElementTy));
+
+    // Unfortunately in LLVM 13.0.1, 'opt -O3' crashes if we use an opaque pointer here.
+    //argTy.push_back(llvm::PointerType::getUnqual(*c));
+  }
+
+  // If the target is a register array, add one more arg that is a pointer to its storage.
+  // In this case, the function will return void.
+  if(retWidth < 0) {
+
+    uint32_t paddedWidth = funcExtract::get_padded_width(-retWidth);
+    llvm::Type *paddedArrayElementTy = llvmWidth(paddedWidth);
+    argTy.push_back(llvm::PointerType::getUnqual(paddedArrayElementTy));
+
+    // Unfortunately in LLVM 13.0.1, 'opt -O3' crashes if we use an opaque pointer here.
+    // argTy.push_back(llvm::PointerType::getUnqual(*TheContext));
+  }
+
+  // A return type of the correct width (possibly void)
+  llvm::Type* retTy = retWidth > 0 ? llvmWidth(retWidth) : llvm::Type::getVoidTy(*c);
 
   llvm::FunctionType *functype =
     llvm::FunctionType::get(retTy, argTy, false);
@@ -1058,19 +1210,37 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
   llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod.get());
 
-  // Set the function's args' names, and add them to the valueCache.
-  // Note that the arg names get translated back to their original Verilog
-  // form.  It is important to match the naming convention of the original
-  // func_extract program.
+  // Set the function's args' names, and add them to the valueCache.  Note
+  // that the arg names come from attribues we set earlier based on their
+  // original Verilog names.  It is important to match the naming convention
+  // of the original func_extract program.  Later these argument names will be
+  // used to create func_info.txt, which is used by the sim_gen program.
+
   unsigned n = 0;
   for (RTLIL::IdString portname : mod->ports) {
     RTLIL::Wire *port = mod->wire(portname);
-    if (port->port_input) {
+    // Skip ASVs in register arrays.
+    if (port->port_input && !port->has_attribute(TARGET_VECTOR_ATTR)) {
       llvm::Argument *arg = func->getArg(n);
       arg->setName(internalToV(portname));
       valueCache.add(arg, DriverSpec(port));
       n++;
     }
+  }
+
+  // Set the the register array arg names.  
+  // Nothing gets added to the valueCache here - it is done a bit later,
+  // since load instructions have to be generated for them.
+  for(auto vecNameWidth: targetVectors) {
+    llvm::Argument *arg = func->getArg(n);
+    arg->setName(internalToV(cycleize_name(vecNameWidth.first, 1)));
+    n++;
+  }
+
+  // If the target is a register array, name the last arg that is a pointer to its storage.
+  if(retWidth < 0) {
+    llvm::Argument *arg = func->getArg(n);
+    arg->setName(funcExtract::RETURN_ARRAY_PTR_ID);  // sim_gen will recognize this name in func_info.txt
   }
 
   return func;
@@ -1080,14 +1250,30 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
 void
 LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
-                          RTLIL::Wire *targetPort,  // in unrolledRtlMod
-                          std::string modName,  // from original Verilog, e.g. "M8080"
-                          std::string instrName,  // As specified in instr.txt
                           std::string targetName,  // As specified in allowed_target.txt
+                          bool targetIsVec,       // target is ASV vector
+                          std::string modName,  // from original Verilog, e.g. "M8080"
+                          int num_cycles,
                           std::string llvmFileName,
                           std::string funcName)
 {
-  assert(targetPort->port_output);
+
+  RTLIL::Wire *targetPort;  // in unrolledRtlMod
+  if (!targetIsVec) {
+    // Get the Yosys RTLIL object representing the destination ASV.
+    RTLIL::IdString portName = cycleize_name(targetName, num_cycles+1);
+    targetPort = unrolledRtlMod->wire(portName);
+
+    if (!targetPort) {
+      log_error("Can't find output port %s for destination ASV %s\n", portName.c_str(), targetName.c_str());
+      return;
+    }
+
+    log("Target SigSpec: ");
+    my_log_wire(targetPort);
+    assert(targetPort->port_output);
+  }
+
 
   reset();
 
@@ -1100,11 +1286,47 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   b = std::make_unique<llvm::IRBuilder<>>(*c);
   llvmMod = std::make_unique<llvm::Module>("mod_;_"+modName+"_;_"+targetName, *c);
 
-  llvm::Function *func = generateFunctionDecl(funcName, unrolledRtlMod, targetPort);
+  // We  need a collection of all known target vectors and their widths.
+  // Get this by scanning input ports and looking at attributes that our
+  // caller has set on them. 
+  Yosys::dict<std::string, unsigned> targetVectors;
+  for (RTLIL::IdString portname : unrolledRtlMod->ports) {
+    RTLIL::Wire *port = unrolledRtlMod->wire(portname);
+    if (port->has_attribute(TARGET_VECTOR_ATTR)) {
+      std::string vecName = port->get_string_attribute(TARGET_VECTOR_ATTR);
+      if (!targetVectors.count(vecName)) {
+        targetVectors[vecName] = port->width;
+      }
+    }
+  }
+
+  llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors,
+                                  targetPort ? targetPort->width : 0);
 
   // basic block
-  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, func);
+  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, llvmFunc);
   b->SetInsertPoint(BB);
+
+  // Start by adding load instructions for the contents of register arrays.
+  // Any unused ones will get deleted by optimization.
+
+  for (RTLIL::IdString portname : unrolledRtlMod->ports) {
+    RTLIL::Wire *port = unrolledRtlMod->wire(portname);
+    if (port->has_attribute(TARGET_VECTOR_ATTR)) {
+
+      // Get the correct array and index for this port
+      std::string arrayName = port->get_string_attribute(TARGET_VECTOR_ATTR);
+      int idx = std::stoi(port->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
+      unsigned width = port->width;
+
+      // Find the function arg that is the pointer to the array.
+      llvm::Value *array = llvmFunc->getValueSymbolTable()->lookup(arrayName);
+      log_assert(array);
+
+      llvm::Value *val = generateLoad(array, width, idx, internalToV(portname));
+      valueCache.add(val, DriverSpec(port));
+    }
+  }
 
   // All the real work happens here 
 
@@ -1120,12 +1342,23 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   log_debug("\n");
 
   llvm::Value *destValue = generateValue(dSpec);
-  b->CreateRet(destValue);
+
+  if (!targetIsVec) {
+    b->CreateRet(destValue);
+  } else {
+    // For register array targets, store each calculated value into
+    // the correct location in the special return array.
+    llvm::Value *array = llvmFunc->getValueSymbolTable()->lookup(funcExtract::RETURN_ARRAY_PTR_ID);
+    log_assert(array);
+    int idx = std::stoi(targetPort->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
+    generateStore(array, idx, destValue);
+  }
+
 
   log("%lu Values in valueCache\n", valueCache.size());
   log("%lu hits, %lu misses\n", valueCache.nHits(), valueCache.nMisses());
 
-  llvm::verifyFunction(*func);
+  llvm::verifyFunction(*llvmFunc);
   llvm::verifyModule(*llvmMod);
 
   std::string Str;
