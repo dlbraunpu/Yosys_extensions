@@ -249,7 +249,7 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
   // so their names are simple strings.
 
   for (auto pair: funcExtract::g_allowedTgtVec) {
-    std::string vecName = funcExtract::timed_name(pair.first, 1);
+    std::string vecName = funcExtract::timed_name(pair.first, num_cycles+1);
     int idx = -1;
     for (const std::string& member : pair.second.members) {
       ++idx;
@@ -281,6 +281,30 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
     } else {
       log_warning("Cannot find unrolled final-cycle signal for ASV %s\n", pair.first.c_str());
       continue;
+    }
+  }
+
+  // Finally, set attributes on the (existing) input ports representing first-cycle members of
+  // ASV register arrays.  
+
+  for (auto pair: funcExtract::g_allowedTgtVec) {
+    std::string vecName = funcExtract::timed_name(pair.first, 1);
+    int idx = -1;
+    for (const std::string& member : pair.second.members) {
+      ++idx;
+      RTLIL::IdString portname = cycleize_name(member, 1);
+      RTLIL::Wire *port = unrolledMod->wire(portname);
+      if (port && port->port_input) {
+        // Annotate the port with the original target ASV name and
+        // its vector information.
+        port->set_string_attribute(TARGET_ATTR, member);
+        port->set_string_attribute(TARGET_VECTOR_ATTR, vecName);
+        port->set_string_attribute(TARGET_VECTOR_IDX_ATTR, std::to_string(idx));
+      } else {
+        log_warning("Cannot find unrolled first-cycle input port for register array ASV %s\n",
+                    member.c_str());
+        continue;
+      }
     }
   }
 
@@ -404,6 +428,8 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   std::string instr_name = destInfo.get_instr_name();
   std::string targetName = destInfo.get_dest_name();
   std::string funcName = destInfo.get_func_name();
+  bool isVector = destInfo.isVector && !destInfo.isMemVec;
+
 
   std::string origModName = internalToV(m_srcmod->name);
 
@@ -453,20 +479,6 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
     }
   }
 
-  // Get the Yosys RTLIL object representing the destination ASV.
-  // TODO: Do a better job of mapping the original Verilog register name to the actual wire name.
-
-  RTLIL::IdString portName = cycleize_name(targetName, num_cycles+1);
-  RTLIL::Wire *targetPort = unrolledMod->wire(portName);
-
-  if (!targetPort) {
-    log_error("Can't find output port wire %s for destination ASV %s\n", portName.c_str(), targetName.c_str());
-    return;
-  }
-
-  log("Target SigSpec: ");
-  my_log_wire(targetPort);
-  
   log_header(m_des, "Writing LLVM data...\n");
 
   LLVMWriter::Options llvmOpts;
@@ -478,7 +490,7 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
 
 
   LLVMWriter writer(llvmOpts);
-  writer.write_llvm_ir(unrolledMod, targetName, false, origModName,
+  writer.write_llvm_ir(unrolledMod, targetName, isVector, origModName,
                       num_cycles, fileName, funcName);
   log("LLVM result written to %s\n", fileName.c_str());
 

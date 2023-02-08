@@ -44,6 +44,10 @@ USING_YOSYS_NAMESPACE  // Does "using namespace"
 LLVMWriter::LLVMWriter(const Options &options) 
 {
   opts = options;
+  c = std::make_unique<llvm::LLVMContext>();
+  b = std::make_unique<llvm::IRBuilder<>>(*c);
+  llvmMod = nullptr;  // Deleting the Context deletes this.
+  llvmFunc = nullptr; // And this.
 }
 
 LLVMWriter::~LLVMWriter()
@@ -55,6 +59,9 @@ LLVMWriter::reset()
 {
   finder.clear();
   valueCache.clear();
+  if (llvmMod) delete llvmMod;
+  llvmMod = nullptr;  
+  llvmFunc = nullptr; // Deleting the module deletes this.
 }
 
 
@@ -181,10 +188,8 @@ LLVMWriter::ValueCache::find(const DriverSpec& driver)
 
 llvm::Value*
 LLVMWriter::generateLoad(llvm::Value *array, unsigned elementWidth, unsigned idx,
-             RTLIL::IdString valueName)
+             std::string valueName)
 {
-  std::string name = internalToV(valueName);
-
   uint32_t paddedWidth = funcExtract::get_padded_width(elementWidth);
 
   llvm::Type *paddedElementTy = llvmWidth(paddedWidth);
@@ -196,19 +201,19 @@ LLVMWriter::generateLoad(llvm::Value *array, unsigned elementWidth, unsigned idx
           paddedElementTy,
           array,
           std::vector<llvm::Value*> {
-              llvm::ConstantInt::get(llvmWidth(idxBitwidth), idx, false) },
-          name+"_addr");
+              llvm::ConstantInt::get(llvmWidth(idxBitwidth), idx, false) }
+          );
 
   if (paddedWidth == elementWidth) {
     // No width issues: create a load instruction with the correct name.
-    return b->CreateLoad(paddedElementTy, gep, name);
+    return b->CreateLoad(paddedElementTy, gep, valueName);
   } else {
     // De-padding necessary: create a load followed by a trunc instruction with the correct name.
     // Note that CreateZExtOrTrunc() will ignore the supplied name and simply return the
     // input value if no conversion is needed.
     llvm::Value *paddedVal = b->CreateLoad(paddedElementTy, gep);
     llvm::Type *elementTy = llvmWidth(elementWidth);
-    return b->CreateTrunc(paddedVal, elementTy, name);
+    return b->CreateTrunc(paddedVal, elementTy, valueName);
   }
 }
 
@@ -227,8 +232,8 @@ LLVMWriter::generateStore(llvm::Value *array, unsigned idx, llvm::Value *val)
           paddedElementTy,
           array,
           std::vector<llvm::Value*> {
-              llvm::ConstantInt::get(llvmWidth(idxBitwidth), idx, false) },
-          val->getName().str()+"_addr");
+              llvm::ConstantInt::get(llvmWidth(idxBitwidth), idx, false) }
+          );
 
   // If no width conversion is needed, no zext or trunc instruction will be generated here.
   llvm::Value *paddedVal = b->CreateZExtOrTrunc(val, paddedElementTy);
@@ -394,14 +399,14 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     // Need to declare and use the llvm.ctpop intrinsic function.
     std::vector<llvm::Type *> arg_type;
     arg_type.push_back(llvmWidth(valWidthA));
-    llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod.get(), llvm::Intrinsic::ctpop, arg_type);
+    llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod, llvm::Intrinsic::ctpop, arg_type);
     llvm::Value *popcnt = b->CreateCall(fun, valA);
     return b->CreateTrunc(popcnt, llvmWidth(1));  // Return low-order bit
   } else if (cell->type == ID($reduce_xnor)) {
     // Same as reduce_xor, plus invert.
     std::vector<llvm::Type *> arg_type;
     arg_type.push_back(llvmWidth(valWidthA));
-    llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod.get(), llvm::Intrinsic::ctpop, arg_type);
+    llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod, llvm::Intrinsic::ctpop, arg_type);
     llvm::Value *popcnt = b->CreateCall(fun, valA);
     return b->CreateNot(b->CreateTrunc(popcnt, llvmWidth(1)));  // Return inverted low-order bit
   } else if (cell->type == ID($logic_not)) {
@@ -863,7 +868,7 @@ llvm::Value *
 LLVMWriter::generateChunkValue(const DriverChunk& chunk,
                                int totalWidth, int offset)
 {
-  assert(totalWidth >= chunk.size() + offset);
+  log_assert(totalWidth >= chunk.size() + offset);
 
   if (chunk.is_data()) {
     // Sanity checks
@@ -1006,13 +1011,14 @@ llvm::Value *
 LLVMWriter::generatePrimaryInputValue(RTLIL::Wire *port)
 {
   assert (port->port_input);
-  std::string argname = internalToV(port->name);
+  std::string argname = internalToLLVM(port->name);
   llvm::Value *val = nullptr;
 
   if (!port->has_attribute(TARGET_VECTOR_ATTR)) {
     // A regular ASV that is supposed to have a function argument.
     // Simply find the correct arg.
     val = llvmFunc->getValueSymbolTable()->lookup(argname);
+    log_assert(val);
 
   } else {
     // Get the correct array and index from attributes we previously set on the port,
@@ -1208,7 +1214,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
   // Create the main function
   llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
 
-  llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod.get());
+  llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod);
 
   // Set the function's args' names, and add them to the valueCache.  Note
   // that the arg names come from attribues we set earlier based on their
@@ -1222,8 +1228,8 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     // Skip ASVs in register arrays.
     if (port->port_input && !port->has_attribute(TARGET_VECTOR_ATTR)) {
       llvm::Argument *arg = func->getArg(n);
-      arg->setName(internalToV(portname));
-      valueCache.add(arg, DriverSpec(port));
+      arg->setName(internalToLLVM(portname));
+      // TMP valueCache.add(arg, DriverSpec(port));
       n++;
     }
   }
@@ -1233,7 +1239,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
   // since load instructions have to be generated for them.
   for(auto vecNameWidth: targetVectors) {
     llvm::Argument *arg = func->getArg(n);
-    arg->setName(internalToV(cycleize_name(vecNameWidth.first, 1)));
+    arg->setName(vecNameWidth.first);
     n++;
   }
 
@@ -1258,21 +1264,6 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
                           std::string funcName)
 {
 
-  RTLIL::Wire *targetPort;  // in unrolledRtlMod
-  if (!targetIsVec) {
-    // Get the Yosys RTLIL object representing the destination ASV.
-    RTLIL::IdString portName = cycleize_name(targetName, num_cycles+1);
-    targetPort = unrolledRtlMod->wire(portName);
-
-    if (!targetPort) {
-      log_error("Can't find output port %s for destination ASV %s\n", portName.c_str(), targetName.c_str());
-      return;
-    }
-
-    log("Target SigSpec: ");
-    my_log_wire(targetPort);
-    assert(targetPort->port_output);
-  }
 
 
   reset();
@@ -1282,31 +1273,26 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   log("Built DriverFinder\n");
   log("%ld objects\n", finder.size());
 
-  c = std::make_unique<llvm::LLVMContext>();
-  b = std::make_unique<llvm::IRBuilder<>>(*c);
-  llvmMod = std::make_unique<llvm::Module>("mod_;_"+modName+"_;_"+targetName, *c);
+  llvmMod = new llvm::Module("mod_;_"+modName+"_;_"+targetName, *c);
 
-  // We  need a collection of all known target vectors and their widths.
+  // We  need a collection of all known input target vectors and their widths.
   // Get this by scanning input ports and looking at attributes that our
   // caller has set on them. 
   Yosys::dict<std::string, unsigned> targetVectors;
   for (RTLIL::IdString portname : unrolledRtlMod->ports) {
     RTLIL::Wire *port = unrolledRtlMod->wire(portname);
-    if (port->has_attribute(TARGET_VECTOR_ATTR)) {
+    if (port->port_input && port->has_attribute(TARGET_VECTOR_ATTR)) {
       std::string vecName = port->get_string_attribute(TARGET_VECTOR_ATTR);
       if (!targetVectors.count(vecName)) {
         targetVectors[vecName] = port->width;
+      } else {
+        // Check for consistent widths of each vector element
+        log_assert(targetVectors[vecName] == (unsigned)port->width);
       }
     }
   }
 
-  llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors,
-                                  targetPort ? targetPort->width : 0);
-
-  // basic block
-  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, llvmFunc);
-  b->SetInsertPoint(BB);
-
+#if 0
   // Start by adding load instructions for the contents of register arrays.
   // Any unused ones will get deleted by optimization.
 
@@ -1323,40 +1309,107 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
       llvm::Value *array = llvmFunc->getValueSymbolTable()->lookup(arrayName);
       log_assert(array);
 
-      llvm::Value *val = generateLoad(array, width, idx, internalToV(portname));
+      llvm::Value *val = generateLoad(array, width, idx, internalToLLVM(portname));
       valueCache.add(val, DriverSpec(port));
     }
   }
+#endif
 
   // All the real work happens here 
 
-  log_debug("Destination port:\n");
-  my_log_debug_wire(targetPort);
-
-  // Collect the drivers of each bit of the destination wire
-  DriverSpec dSpec;
-  finder.buildDriverOf(targetPort, dSpec);
-
-  // Print what drives the bits of this wire
-  log_debug_driverspec(dSpec);
-  log_debug("\n");
-
-  llvm::Value *destValue = generateValue(dSpec);
-
   if (!targetIsVec) {
+    // Get the Yosys RTLIL object representing the destination ASV.
+    RTLIL::IdString portName = cycleize_name(targetName, num_cycles+1);
+    RTLIL::Wire *targetPort = unrolledRtlMod->wire(portName);
+
+    if (!targetPort) {
+      log_error("Can't find output port %s for destination ASV %s\n", portName.c_str(), targetName.c_str());
+      return;
+    }
+
+    llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors, targetPort->width);
+
+    // basic block
+    llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, llvmFunc);
+    b->SetInsertPoint(BB);
+
+
+    log("Target SigSpec: ");
+    my_log_wire(targetPort);
+    log_assert(targetPort->port_output);
+  
+    // Collect the drivers of each bit of the destination wire
+    DriverSpec dSpec;
+    finder.buildDriverOf(targetPort, dSpec);
+
+    // Print what drives the bits of this wire
+    log_debug_driverspec(dSpec);
+    log_debug("\n");
+
+    llvm::Value *destValue = generateValue(dSpec);
+
     b->CreateRet(destValue);
   } else {
-    // For register array targets, store each calculated value into
-    // the correct location in the special return array.
-    llvm::Value *array = llvmFunc->getValueSymbolTable()->lookup(funcExtract::RETURN_ARRAY_PTR_ID);
-    log_assert(array);
-    int idx = std::stoi(targetPort->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
-    generateStore(array, idx, destValue);
+    log("Vector target %s\n", targetName.c_str());
+
+    llvm::Value *returnValueArray = nullptr;
+    std::string cycleizedTargetName = internalToLLVM(cycleize_name(targetName, num_cycles+1));
+    log("Cycleized vector target %s\n", cycleizedTargetName.c_str());
+    log_flush();
+
+    // Scan over all the input ports, and process all the ones belonging to
+    // the given target vector
+    for (RTLIL::IdString portname : unrolledRtlMod->ports) {
+      RTLIL::Wire *targetPort = unrolledRtlMod->wire(portname);
+      if (targetPort->get_string_attribute(TARGET_VECTOR_ATTR) == cycleizedTargetName) {
+
+        int idx = std::stoi(targetPort->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
+        log("Vector target %s[%d] SigSpec: ", targetName.c_str(), idx);
+        my_log_wire(targetPort);
+        log_flush();
+
+        log_assert(targetPort->port_output);
+
+        // Collect the drivers of each bit of the destination wire
+        DriverSpec dSpec;
+        finder.buildDriverOf(targetPort, dSpec);
+
+        // Print what drives the bits of this wire
+        log_debug_driverspec(dSpec);
+        log_debug("\n");
+
+        // We need the width of the targets before we can declare the function
+        if (!llvmFunc) {
+          llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors, -(targetPort->width));
+
+          // Get the function argument that points to where the return values go.
+          returnValueArray = llvmFunc->getValueSymbolTable()->lookup(
+                                            funcExtract::RETURN_ARRAY_PTR_ID);
+          log_assert(returnValueArray);
+
+          // basic block
+          llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, llvmFunc);
+          b->SetInsertPoint(BB);
+        }
+
+
+        llvm::Value *destValue = generateValue(dSpec);
+
+        // Store each calculated value into the correct location in the special return array.
+        log_assert(returnValueArray);
+        generateStore(returnValueArray, idx, destValue);
+      }
+    }
+
+    b->CreateRetVoid();
   }
+
+  log_assert(llvmFunc);
 
 
   log("%lu Values in valueCache\n", valueCache.size());
   log("%lu hits, %lu misses\n", valueCache.nHits(), valueCache.nMisses());
+  log("%u LLVM instructins generated\n", llvmMod->getInstructionCount());
 
   llvm::verifyFunction(*llvmFunc);
   llvm::verifyModule(*llvmMod);

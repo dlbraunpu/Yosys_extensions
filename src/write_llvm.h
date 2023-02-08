@@ -60,9 +60,9 @@ private:
   };
 
 
-  std::shared_ptr<llvm::IRBuilder<>> b;
-  std::shared_ptr<llvm::LLVMContext> c;
-  std::shared_ptr<llvm::Module> llvmMod;
+  std::unique_ptr<llvm::LLVMContext> c;
+  std::unique_ptr<llvm::IRBuilder<>> b;
+  llvm::Module *llvmMod;
   llvm::Function *llvmFunc;  // function being generated
 
   ValueCache valueCache;
@@ -93,7 +93,7 @@ private:
                                   Yosys::RTLIL::IdString port);
 
   llvm::Value* generateLoad(llvm::Value *array, unsigned elementWidth, unsigned idx,
-                             Yosys::RTLIL::IdString valueName);
+                             std::string valueName);
 
   void generateStore(llvm::Value *array, unsigned idx, llvm::Value *val);
 

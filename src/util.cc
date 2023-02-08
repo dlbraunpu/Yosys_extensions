@@ -126,8 +126,10 @@ std::string internalToV(IdString internal_id)
   // TODO: Ideally we would use functions in funcExtract to parse the
   // unrolled name, convert the base portion, and re-unroll the result.
   
-  static const std::regex unrolled_re("[^\\s#]___#\\d+_");
+  static const std::regex unrolled_re("[^#]+___#\\d+_");
   bool is_unrolled = std::regex_match(str, unrolled_re);
+
+  printf("internalToV: %s   is_unrolled %d\n", str, is_unrolled);
 
   if ('0' <= *str && *str <= '9')
     do_escape = true;
