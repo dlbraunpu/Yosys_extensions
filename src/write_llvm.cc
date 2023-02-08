@@ -1229,7 +1229,6 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     if (port->port_input && !port->has_attribute(TARGET_VECTOR_ATTR)) {
       llvm::Argument *arg = func->getArg(n);
       arg->setName(internalToLLVM(portname));
-      // TMP valueCache.add(arg, DriverSpec(port));
       n++;
     }
   }
@@ -1292,30 +1291,8 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
     }
   }
 
-#if 0
-  // Start by adding load instructions for the contents of register arrays.
-  // Any unused ones will get deleted by optimization.
 
-  for (RTLIL::IdString portname : unrolledRtlMod->ports) {
-    RTLIL::Wire *port = unrolledRtlMod->wire(portname);
-    if (port->has_attribute(TARGET_VECTOR_ATTR)) {
-
-      // Get the correct array and index for this port
-      std::string arrayName = port->get_string_attribute(TARGET_VECTOR_ATTR);
-      int idx = std::stoi(port->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
-      unsigned width = port->width;
-
-      // Find the function arg that is the pointer to the array.
-      llvm::Value *array = llvmFunc->getValueSymbolTable()->lookup(arrayName);
-      log_assert(array);
-
-      llvm::Value *val = generateLoad(array, width, idx, internalToLLVM(portname));
-      valueCache.add(val, DriverSpec(port));
-    }
-  }
-#endif
-
-  // All the real work happens here 
+  // Now to actually start generating code
 
   if (!targetIsVec) {
     // Get the Yosys RTLIL object representing the destination ASV.
@@ -1354,7 +1331,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
 
     llvm::Value *returnValueArray = nullptr;
     std::string cycleizedTargetName = internalToLLVM(cycleize_name(targetName, num_cycles+1));
-    log("Cycleized vector target %s\n", cycleizedTargetName.c_str());
+    log_debug("Cycleized vector target %s\n", cycleizedTargetName.c_str());
     log_flush();
 
     // Scan over all the input ports, and process all the ones belonging to
@@ -1364,8 +1341,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
       if (targetPort->get_string_attribute(TARGET_VECTOR_ATTR) == cycleizedTargetName) {
 
         int idx = std::stoi(targetPort->get_string_attribute(TARGET_VECTOR_IDX_ATTR));
-        log("Vector target %s[%d] SigSpec: ", targetName.c_str(), idx);
-        my_log_wire(targetPort);
+        log_debug("Vector target %s[%d]\n", targetName.c_str(), idx);
         log_flush();
 
         log_assert(targetPort->port_output);
@@ -1378,7 +1354,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
         log_debug_driverspec(dSpec);
         log_debug("\n");
 
-        // We need the width of the targets before we can declare the function
+        // We cannot declare the function until we know the width of the targets
         if (!llvmFunc) {
           llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors, -(targetPort->width));
 
@@ -1409,7 +1385,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
 
   log("%lu Values in valueCache\n", valueCache.size());
   log("%lu hits, %lu misses\n", valueCache.nHits(), valueCache.nMisses());
-  log("%u LLVM instructins generated\n", llvmMod->getInstructionCount());
+  log("%u LLVM instructions generated\n", llvmMod->getInstructionCount());
 
   llvm::verifyFunction(*llvmFunc);
   llvm::verifyModule(*llvmMod);
