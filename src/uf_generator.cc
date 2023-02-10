@@ -62,72 +62,84 @@ void getSigSpec(const std::string& valStr, RTLIL::SigSpec& spec)
 // This function properly sets 0/1/x values on input ports, which may
 // represent ASVs, oriinary registers, or top-level input signals.
 
-// If the given SigSpec is all-x, origPort will be left alone.
+// If exposeX is false, origPort will be un-ported (thus becoming a plain
+// wire) and it will get all the given 0/1/x values set on it.
 
-// If the SigSpec is fully const (0/1), origPort will be un-ported (thus
-// becoming a plain wire) and renamed, and the SigSpec's 0/1 values will be
-// set on the wire.
+// If exposeX is true and the given SigSpec is all-x, origPort will be left
+// alone.
 
-// If the SigSpec is a mix of 0, 1, and x, origPort will be un-ported and
+// If the given SigSpec is fully const (0/1), origPort will be un-ported and
+// the SigSpec's 0/1 values will be set on the wire.
+
+// If the SigSpec is a mix of 0/1 and x, origPort will be un-ported and
 // renamed, and a new port will be created with its original name. Each 0/1
 // bit in SigSpec will be set on origPort, and for each x bit, origPort will
 // be connected to the new port.  (The bits in the new port corresponding to
 // 0/1 will be left unconnected.)
-
-// However, if forceRemove is true, origPort will always be un-ported, no new
-// port will be created, and origPort will get all the given 0/1/x values set
-// on it.
 
 // Any newly-created port will be returned.  The new or original port will be
 // added to the processedPorts list.  Be sure to call module->fixup_ports()
 // after calling this.
 
 // TODO: It is possible for some (or all?) of origPort's bits to have a
-// constant already set on them in the design.  We should probably avoid connecting
-// anything else to such a bit.  Checking this would require building and
-// using a SigMap.
+// constant already set on them in the design (thus making it a multi-driven
+// signal).  We should probably avoid connecting anything else to such a bit.
+// Checking this would require building and using a SigMap.
 
 RTLIL::Wire *
-YosysUFGenerator::applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool forceRemove,
+YosysUFGenerator::applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& ss, bool exposeX,
                                   Yosys::pool<Yosys::RTLIL::Wire*>& processedPorts)
 {
   log_assert(origPort->port_input);
   log_assert(processedPorts.count(origPort) == 0);
-
-  if (ss.is_fully_undef() && !forceRemove) {
-    processedPorts.insert(origPort);
-    return origPort;  // no change needed: common case for ASVs.
-  }
-
+  log_assert(ss.is_fully_const());
 
   RTLIL::Module *mod = origPort->module;
 
-  RTLIL::IdString origName = origPort->name;
-
-  std::string newStr = "$" + origPort->name.substr(1) + "orig";
-  RTLIL::IdString newName = mod->uniquify(newStr);
-  mod->rename(origPort, newName);
-
-  RTLIL::Wire *newPort = nullptr;
-  if (!ss.is_fully_def() && !forceRemove) {
-    // Make a new port only if it is useful (ss has some 'x's) and wanted
-    newPort = mod->addWire(origName, origPort->width);
-
-    // The new port takes over the old port's status
-    newPort->port_input = origPort->port_input;
-    newPort->port_output = origPort->port_output;
-    // TODO: Copy or move orig port attributes to new wire.
-  }
-  origPort->port_input = false;  // the orignal port is demoted to an ordinary Wire
-  origPort->port_output = false;
-
-  if (!newPort) {
-    // Simply connect the SigSpec to the original port wire.
+  // If exposeX is not given, the port is demoted to a plain wire, and it gets
+  // the given SigSpec applied to it.
+  if (!exposeX) {
+    origPort->port_input = false;  // the original port is demoted to an ordinary Wire
+    // Connect the SigSpec to the former port's wire.
     mod->connect(RTLIL::SigSpec(origPort), ss);
+    processedPorts.insert(origPort);
+    return origPort;
+
+  } else if (ss.is_fully_undef()) {
+    // no change needed if all-x and exposeX is true: common case for ASVs.
+    processedPorts.insert(origPort);
+    return origPort;
+
+  } else if (ss.is_fully_def()) {
+    // The port becomes a wire with a constant on it: common case for fully-encoded primary inputs
+    origPort->port_input = false;
+    // Connect the all-0/1 SigSpec to the former port's wire.
+    mod->connect(RTLIL::SigSpec(origPort), ss);
+    processedPorts.insert(origPort);
+    return origPort; 
+
   } else {
-    // A partially-constant SigSpec: connect the old port to either the new port or the SigSpec
+    // Remaining situation is a partially-defined sigspec, and exposeX is true.
+
+    // Rename the original port.  It keeps all its current connections.
+    RTLIL::IdString origName = origPort->name;
+    std::string newStr = "$" + origPort->name.substr(1) + "orig";
+    RTLIL::IdString newName = mod->uniquify(newStr);
+    mod->rename(origPort, newName);
+
+    // Make a new port with the orignal port's name
+    RTLIL::Wire *newPort = mod->addWire(origName, origPort->width);
+
+    // The new port takes over the old port's status, the old port becomes an
+    // ordinary wire.
+    // TODO: Copy or move orig port attributes to new wire?
+    newPort->port_input = true;
+    newPort->port_output = origPort->port_output;
+    origPort->port_input = false;
+    
+
+    // A partially-constant SigSpec, so connect the old port to either the new port or the SigSpec
     // on a bit-by-bit basis.
-    log_assert(newPort);
 
     RTLIL::SigSpec ss2;
     for (int n=0; n < origPort->width; ++n) {
@@ -140,10 +152,10 @@ YosysUFGenerator::applyPortSignal(RTLIL::Wire *origPort, const RTLIL::SigSpec& s
       }
     }
     mod->connect(RTLIL::SigSpec(origPort), ss2);
-  }
 
-  if (newPort) processedPorts.insert(newPort);
-  return newPort;
+    processedPorts.insert(newPort);
+    return newPort;
+  }
 }
 
 
@@ -199,20 +211,23 @@ YosysUFGenerator::applyInstrEncoding(RTLIL::Module* mod, const funcExtract::Inst
       }
 
       adjustSigSpecWidth(ss, port->width);
-      applyPortSignal(port, ss, false /*forceRemove*/, processedPorts);
+      applyPortSignal(port, ss, true /*exposeX*/, processedPorts);
 
-      // Set x on any clock inputs. The name of the clock signal is defined in
-      // instr.txt.  Normally the clock signals will be dead, since we removed
-      // all the registers.
-      if (!taintGen::g_recentClk.empty()) {
-        RTLIL::IdString clockname = cycleize_name(taintGen::g_recentClk, cycle);
-        RTLIL::Wire *clockport = mod->wire(clockname);
-        if (clockport && clockport->port_input) {
-          // Set to x, probably opto will eliminate it.
-          RTLIL::SigSpec ss(RTLIL::State::Sx);
-          adjustSigSpecWidth(ss, clockport->width);
-          applyPortSignal(clockport, ss, true /*forceRemove*/, processedPorts);
-        }
+    }
+  }
+
+  // Set x on any clock inputs for all cycles. The name of the clock signal is defined in
+  // instr.txt.  Normally the clock signals will be dead, since we removed
+  // all the registers.
+  if (!taintGen::g_recentClk.empty()) {
+    for(int cycle = 1; cycle <= cycles+1; ++cycle) {
+      RTLIL::IdString clockname = cycleize_name(taintGen::g_recentClk, cycle);
+      RTLIL::Wire *clockport = mod->wire(clockname);
+      if (clockport && clockport->port_input) {
+        // Set to x, probably opto will eliminate it.
+        RTLIL::SigSpec ss(RTLIL::State::Sx);
+        adjustSigSpecWidth(ss, clockport->width);
+        applyPortSignal(clockport, ss, false /*exposeX*/, processedPorts);
       }
     }
   }
@@ -372,7 +387,7 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
   // Apply any reset values as needed to input ports for cycle #1.
   // Explicit x reset values are included.
   // TODO: It is possible for some (or all?) of the port's bits to have a
-  // constant already set on them in the design.  Will a class between the
+  // constant already set on them in the design.  Will a clash between the
   // reset value and that constant cause problems?
   log("Applying reset values...\n");
   for (auto pair : funcExtract::g_rstVal) {
@@ -389,7 +404,7 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
         continue;
       }
       adjustSigSpecWidth(ss, port->width);
-      applyPortSignal(port, ss, true /*forceRemove*/, processedPorts);
+      applyPortSignal(port, ss, false /*exposeX*/, processedPorts);
     }
   }
   unrolledMod->fixup_ports();  // Necessary since we added and removed ports
@@ -404,7 +419,7 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
       // Set to x, possibly opto will eliminate it.
       RTLIL::SigSpec ss(RTLIL::State::Sx);
       adjustSigSpecWidth(ss, port->width);
-      applyPortSignal(port, ss, true /*forceRemove*/, processedPorts);
+      applyPortSignal(port, ss, false /*exposeX*/, processedPorts);
     }
   }
   unrolledMod->fixup_ports();  // Necessary since we added and removed ports

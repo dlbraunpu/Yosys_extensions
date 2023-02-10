@@ -868,6 +868,8 @@ llvm::Value *
 LLVMWriter::generateChunkValue(const DriverChunk& chunk,
                                int totalWidth, int offset)
 {
+  log_debug("generateChunkValue totalWidth %d offset %d  ", totalWidth, offset);
+  log_debug_driverchunk(chunk);
   log_assert(totalWidth >= chunk.size() + offset);
 
   if (chunk.is_data()) {
@@ -992,7 +994,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
     val = b->CreateZExtOrTrunc(val, llvmWidth(totalWidth));
   }
 
-  if (chunk.offset > 0) {
+  if (offset > 0) {
     val = b->CreateShl(val, offset);
   }
 
@@ -1104,7 +1106,6 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     std::vector<llvm::Value*> values;
     int offset = 0;
     for (const DriverChunk& chunk : dSpec.chunks()) {
-      log_debug_driverchunk(chunk);
       values.push_back(generateChunkValue(chunk, dSpec.size(), offset));
       offset += chunk.size();
     }
