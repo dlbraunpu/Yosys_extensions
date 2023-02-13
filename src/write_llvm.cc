@@ -140,6 +140,20 @@ LLVMWriter::llvmUndef(unsigned width)
 }
 
 
+
+llvm::Value *
+LLVMWriter::llvmUndefValue(unsigned width)
+{
+  if (opts.use_poison) {
+    return llvmPoison(width);
+    //return llvmUndef(width);
+  } else {
+    return llvmZero(width);
+  }
+}
+
+
+
 unsigned
 LLVMWriter::getWidth(llvm::Value *val)
 {
@@ -887,11 +901,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
     if (DriverSpec(chunk).is_fully_undef() && totalWidth == chunk.size()) {
       log_assert(offset == 0);
       log_warning("All-x driver chunk found: %s\n", valStr.c_str());
-      if (opts.use_poison) {
-        return llvmPoison(totalWidth);
-      } else {
-        return llvmZero(totalWidth);
-      }
+      return llvmUndefValue(totalWidth);
 
     } else if (!DriverSpec(chunk).is_fully_def()) {
       log_warning("Partial-x driver chunk found: %s width %d\n", valStr.c_str(), totalWidth);
@@ -1078,11 +1088,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
 
     if (dSpec.is_fully_undef()) {
       log_warning("All-x driver spec found: %s\n", valStr.c_str());
-      if (opts.use_poison) {
-        return llvmPoison(dSpec.size());
-      } else {
-        return llvmZero(dSpec.size());
-      }
+      return llvmUndefValue(dSpec.size());
     } else if (!dSpec.is_fully_def()) {
       log_warning("Partial-x driver spec found: %s\n", valStr.c_str());
 

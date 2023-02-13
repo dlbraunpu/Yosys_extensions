@@ -82,6 +82,7 @@ private:
 
   llvm::PoisonValue *llvmPoison(unsigned width);
   llvm::UndefValue *llvmUndef(unsigned width);
+  llvm::Value * llvmUndefValue(unsigned width); // Considers Options
 
   unsigned getWidth(llvm::Value *val);
 
