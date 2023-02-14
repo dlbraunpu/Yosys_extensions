@@ -213,44 +213,6 @@ bool is_reg_wire(RTLIL::SigSpec sig, std::string &reg_name)
 }
 
 
-// This make a Verilog-friendly cleaned-up name that we don't really care about.
-std::string cellname(RTLIL::Cell *cell)
-{
-  if (!false && cell->name[0] == '$' && RTLIL::builtin_ff_cell_types().count(cell->type) && cell->hasPort(ID::Q) && !cell->type.in(ID($ff), ID($_FF_)))
-  {
-    RTLIL::SigSpec sig = cell->getPort(ID::Q);
-    if (GetSize(sig) != 1 || sig.is_fully_const())
-      goto no_special_reg_name;
-
-    RTLIL::Wire *wire = sig[0].wire;
-
-    if (wire->name[0] != '\\')
-      goto no_special_reg_name;
-
-    std::string cell_name = wire->name.str();
-
-    size_t pos = cell_name.find('[');
-    if (pos != std::string::npos)
-      cell_name = cell_name.substr(0, pos) + "_reg" + cell_name.substr(pos);
-    else
-      cell_name = cell_name + "_reg";
-
-    if (wire->width != 1)
-      cell_name += stringf("[%d]", wire->start_offset + sig[0].offset);
-
-    if (active_module && active_module->count_id(cell_name) > 0)
-        goto no_special_reg_name;
-
-    return cleaned_id(cell_name);
-  }
-  else
-  {
-no_special_reg_name:
-    return cleaned_id(cell->name).c_str();
-  }
-}
-
-
 
 // Doug: add "__#<cycle>" to the object's name, and ensure that it is unique.
 // Because of the uniquification, it is sort of dangerous to parse object names
@@ -300,7 +262,7 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 
 
 // Copy the src module's objects into the dest module, renaming them
-// based on the given cycle number.  The given RegDict will be filled in.
+// based on the given cycle number.  The given RegDicts will be filled in.
 void smash_module(RTLIL::Module *dest, RTLIL::Module *src, 
                   int cycle, RegDict& registers)
 {
@@ -360,7 +322,7 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
     design->select(dest, new_cell);
 
     // Warn if we discover explicit hierarchy in the data.
-    if (src_cell->name[0] != '$') {
+    if (src_cell->type[0] != '$') {
       log_warning("Smashing user-defined %s cell %s for cycle %d\n",
                 src_cell->type.c_str(), src_cell->name.c_str(), cycle);
     }
@@ -368,8 +330,15 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
 
     // For FF cells, update the dict that maps the (cycle-independent) register
     // name to the new cell.  Later we will delete these cells.
+    // Do the same thing for memory cells.
     if (RTLIL::builtin_ff_cell_types().count(src_cell->type) > 0) {
       log_debug("Smashing %s cell %s for cycle %d\n",
+                src_cell->type.c_str(), src_cell->name.c_str(), cycle);
+
+      registers[src_cell] = new_cell;
+
+    } else if (src_cell->is_mem_cell()) {
+      log_debug("Smashing %s memory cell %s for cycle %d\n",
                 src_cell->type.c_str(), src_cell->name.c_str(), cycle);
 
       registers[src_cell] = new_cell;
@@ -568,15 +537,14 @@ bool split_ff(RTLIL::Cell *cell,
 
 
   if (RTLIL::builtin_ff_cell_types().count(cell->type) == 0) {
+    log_assert(false);
     return false;  // Not a ff
   }
 
   FfData ff(nullptr, cell);
 
-
-  std::string reg_name = cellname(cell);
-  log_debug("\nSplitting FF cell '%s' known to some as '%s'.  Width %d\n",
-            cell->name.c_str(), reg_name.c_str(), ff.width);
+  log_debug("\nSplitting FF cell '%s'.  Width %d\n",
+            cell->name.c_str(), ff.width);
 
   // $ff / $_FF_ cell: not supported.
   if (ff.has_gclk) {
@@ -669,6 +637,109 @@ bool split_ff(RTLIL::Cell *cell,
 }
 
 
+// Replace the given memory cell.
+// The signal driving the inputs is returned in to_D.
+// The signal driven by the outputs is returned in from_Q.
+
+bool split_mem(RTLIL::Cell *cell, RTLIL::Cell *orig_cell, int cycle,
+               RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
+{
+  RTLIL::Module *mod = cell->module;
+
+  if (!cell->is_mem_cell()) {
+    log_assert(false);
+    return false;  // Not a memory
+  }
+
+  // Check for complicated memories.
+  // Multiple read ports could easily be supported by adding 
+  // multiple extractors
+  log_assert(cell->parameters[ID::RD_PORTS].as_int() == 1);
+  log_assert(cell->parameters[ID::WR_PORTS].as_int() == 1);
+  log_assert(cell->parameters[ID::OFFSET].as_int() == 0);
+  log_assert(cell->parameters[ID::RD_CLK_ENABLE].as_int() == 0);
+
+  int size = cell->parameters[ID::SIZE].as_int();
+  int width = cell->parameters[ID::WIDTH].as_int();
+
+  log_debug("\nSplitting memory cell '%s'. Size %d  Width %d\n",
+            cell->name.c_str(), size, width);
+
+  // Create Wires for each element of the memory, and make SigSpecs that will 
+  // be used to connect all of them between cycles.
+  RTLIL::SigSpec sig_d;
+  RTLIL::SigSpec sig_q;
+  for (int j=0; j < size; ++j) {
+    std::string mem_name = orig_cell->name.str();
+    std::string suffix = "["+std::to_string(j)+"]";
+
+    RTLIL::IdString wd_name = mod->uniquify(cycleize_name(mem_name+"_d"+suffix, cycle));
+    RTLIL::Wire *wd = mod->addWire(wd_name, width);
+    sig_d.append(wd);
+
+    RTLIL::IdString wq_name = mod->uniquify(cycleize_name(mem_name+suffix, cycle));
+    RTLIL::Wire *wq = mod->addWire(wq_name, width);
+    sig_q.append(wq);
+  }
+
+  RTLIL::Cell *extractor = mod->addCell(mod->uniquify(cell->name.str()+"_extract"),
+                                     RTLIL::IdString("\\func_extract_mem_extract"));
+  extractor->setParam(ID::ABITS, cell->parameters[ID::ABITS]);
+  extractor->setParam(ID::SIZE, cell->parameters[ID::SIZE]);
+  extractor->setParam(ID::WIDTH, cell->parameters[ID::WIDTH]);
+  extractor->setPort(RTLIL::IdString("\\MEM_IN"), sig_q);
+  extractor->setPort(RTLIL::IdString("\\ADDR"), cell->getPort(ID::RD_ADDR));
+  extractor->setPort(RTLIL::IdString("\\DATA"), cell->getPort(ID::RD_DATA));
+
+  RTLIL::Cell *inserter = mod->addCell(mod->uniquify(cell->name.str()+"_insert"),
+                                     RTLIL::IdString("\\func_extract_mem_insert"));
+  inserter->setParam(ID::ABITS, cell->parameters[ID::ABITS]);
+  inserter->setParam(ID::SIZE, cell->parameters[ID::SIZE]);
+  inserter->setParam(ID::WIDTH, cell->parameters[ID::WIDTH]);
+  inserter->setPort(RTLIL::IdString("\\MEM_IN"), sig_q);
+  inserter->setPort(RTLIL::IdString("\\ADDR"), cell->getPort(ID::WR_ADDR));
+  inserter->setPort(RTLIL::IdString("\\DATA"), cell->getPort(ID::WR_DATA));
+
+  // Make a really wide wire to connect the extractor output to the write
+  // enable mux
+  RTLIL::IdString wmux_name = mod->uniquify(cell->name.str()+"_wmux");
+  RTLIL::Wire *wmux = mod->addWire(wmux_name, width*size);
+
+  inserter->setPort(RTLIL::IdString("\\MEM_OUT"), wmux);
+
+  // Make a really wide mux
+  RTLIL::Cell *mux = mod->addCell(mod->uniquify(cell->name.str()+"_mux"), ID($mux));
+  log_debug("Added memory write mux %s\n", mux->name.c_str());
+  mux->setParam(ID::WIDTH, width*size);
+
+  // The mux B input (S==1) gets the wire connected to the output of the extractor
+  mux->setPort(ID::B, wmux);
+
+  // The mux A input (S==0) gets the from_Q signal
+  mux->setPort(ID::A, sig_q);
+
+  // The mux Y output goes to the to_D signal
+  mux->setPort(ID::Y, sig_d);
+
+  // The mux S input gets first bit of the write enable signal.
+  // Presumably all the WR_EN bits are the same.
+  RTLIL::SigSpec wren = cell->getPort(ID::WR_EN);
+  mux->setPort(ID::S, wren[0]);
+
+
+  log_debug("Read data signal: %s\n", log_signal(sig_d));
+  log_debug("Write data signal: %s\n", log_signal(sig_q));
+
+  to_D = sig_d;
+  from_Q = sig_q;
+
+  // The memory of course goes away.
+  mod->remove(cell);
+  return true;
+}
+
+
+
 void join_sigs(RTLIL::Module *destmod,
                const RTLIL::SigSpec& from_sig, const RTLIL::SigSpec& to_sig)
 {
@@ -706,10 +777,7 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
     }
 
     SigSpecDict to_Ds0;
-    SigSpecDict from_Qs0;
-
     SigSpecDict to_Ds1;
-    SigSpecDict from_Qs1;
 
     // We unroll forwards in time, and (unlike the original
     // func_extract program) the cycles are numbered forwards in time.
@@ -723,28 +791,27 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
 
       smash_module(destmod, srcmod, cycle, cur_cycle_regs);
 
-      // For efficiency we use pairs of SigSpecDicts, which alternate 
+      // For efficiency we use a pair of SigSpecDicts, which alternate 
       // between the roles of 'current' and 'prev'.
       SigSpecDict& prev_cycle_to_Ds = (cycle&0x01) ? to_Ds0 : to_Ds1;
-
       SigSpecDict& cur_cycle_to_Ds = (cycle&0x01) ? to_Ds1 : to_Ds0;
-      SigSpecDict& cur_cycle_from_Qs = (cycle&0x01) ? from_Qs1 : from_Qs0;
 
       cur_cycle_to_Ds.clear();
-      cur_cycle_from_Qs.clear();
 
       for (auto pair : cur_cycle_regs) {
-        RTLIL::SigSpec to_D;
-        RTLIL::SigSpec from_Q;
-
         RTLIL::Cell *orig_reg = pair.first;
         RTLIL::Cell *cycle_reg = pair.second;
 
         // This sets to_D and from_Q
-        split_ff(cycle_reg, to_D, from_Q);
+        RTLIL::SigSpec to_D;
+        RTLIL::SigSpec from_Q;
+        if (orig_reg->is_mem_cell()) {
+          split_mem(cycle_reg, orig_reg, cycle, to_D, from_Q);
+        } else {
+          split_ff(cycle_reg, to_D, from_Q);
+        }
 
         cur_cycle_to_Ds[orig_reg] = to_D;
-        cur_cycle_from_Qs[orig_reg] = from_Q;
 
         RTLIL::SigSpec& prev_cycle_to_D = prev_cycle_to_Ds[orig_reg];
 
