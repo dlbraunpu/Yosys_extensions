@@ -107,6 +107,8 @@ private:
   llvm::Value *generateMuxCellOutputValue(Yosys::RTLIL::Cell *cell);
   llvm::Value *generatePmuxCellOutputValue(Yosys::RTLIL::Cell *cell);
 
+  llvm::Value *generateMagicCellOutputValue(Yosys::RTLIL::Cell *cell,
+                                            Yosys::RTLIL::IdString port);
 
   // Create a Value representing the output port of the given cell.
   // Since this is not given a DriverSpec, it does not touch the valueCache.

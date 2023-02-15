@@ -32,4 +32,10 @@ constexpr const char *TARGET_ATTR = "\\func_extract_target";
 constexpr const char *TARGET_VECTOR_ATTR = "\\func_extract_target_vector";
 constexpr const char *TARGET_VECTOR_IDX_ATTR = "\\func_extract_target_vector_idx";
 
+// Used for special magic cells used to support memory access.
+constexpr const char *MEM_EXTRACT_MOD_NAME = "\\func_extract_mem_extract";
+constexpr const char *MEM_INSERT_MOD_NAME = "\\func_extract_mem_insert";
+constexpr const char *MEM_MOD_ATTR = "\\func_extract_mem";
+
+
 #endif

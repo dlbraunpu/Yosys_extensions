@@ -528,10 +528,23 @@ uint32_t YosysModuleInfo::get_var_width_simp(const std::string& var,
   log_assert(mod);
 
   RTLIL::Wire *wire = mod->wire(verilogToInternal(var));
-  log_assert(wire);
+  if (wire) return wire->width;
 
-  if (!wire) return 0;
-  return wire->width;
+  // Possibly the variable is a memory element, which does not have a
+  // nicely-named wire associated with it.
+
+  // Strip off any indexing, e.g. "cpuregs[12]"
+  static const std::regex bracketRegex("\\[([0-9]+)\\]");
+  std::string basename = std::regex_replace(var, bracketRegex, "");
+
+  RTLIL::Cell *memcell = mod->cell(verilogToInternal(basename));
+  // Look for the \WIDTH parameter
+  if (memcell && memcell->is_mem_cell()) {
+    return memcell->getParam("\\WIDTH").as_int();
+  }
+
+  log_assert(false);
+  return 0;
 }
 
 

@@ -804,6 +804,22 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 
 
 
+llvm::Value *
+LLVMWriter::generateMagicCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
+{
+  if (cell->type == MEM_EXTRACT_MOD_NAME) {
+
+  } else if (cell->type == MEM_INSERT_MOD_NAME) {
+
+  } else {
+    assert(false);
+  }
+
+  return llvmZero(1);
+
+}
+
+
 // Create a Value representing the output port of the given cell.
 // Since this is not given a DriverSpec, it does not touch the valueCache.
 // The caller is reponsible for that.
@@ -811,13 +827,23 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 {
-  // Here we handle only builtin cells.
+  // This function handles only builtin cells and a couple of magic cells we create.
   // Hierarchical modules are a different thing.
-  if (cell->name[0] != '$' || cell->type[0] != '$') {
-    log_error("Unsupported hierarchical cell %s\n", cell->name.c_str());
-    return nullptr;
+
+  if (cell->type[0] != '$') {
+    // See if the cell is one of our magic ones.
+    RTLIL::Module *m = cell->module->design->module(cell->type);
+    if (m && m->get_bool_attribute(MEM_MOD_ATTR)) {
+      return generateMagicCellOutputValue(cell, port);
+    } else {
+      log_error("Unsupported non-builtin cell %s\n", cell->name.c_str());
+      return nullptr;
+    }
   }
 
+  // All builtin cell outputs are supposed to be Y
+  log_assert(port == ID::Y);
+  log_assert(cell->output(port));
 
   RTLIL::SigSpec outputSig = cell->getPort(ID::Y);
 
@@ -1107,7 +1133,6 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
 
     log_debug("generateValue for complex Driverspec\n");
     log_debug_driverspec(dSpec);
-
 
     std::vector<llvm::Value*> values;
     int offset = 0;

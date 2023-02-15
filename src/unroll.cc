@@ -31,7 +31,6 @@
 #include "llvm/ADT/APInt.h"
 
 #include "unroll.h"
-#include "write_llvm.h"
 #include "util.h"
 
 #include "kernel/register.h"
@@ -52,13 +51,14 @@ bool verbose, noattr;
 
 // TODO: Put the functions and global vars below in a proper class.
 
-// This maps registers in original module to copies in the smashed dest module,
-// for a particular cycle
+// This maps registers and memories in the original module to copies
+// in the smashed dest module, for a particular cycle
 typedef dict<RTLIL::Cell*, RTLIL::Cell*> RegDict;
 
-// This maps registers in original module to D or Q pin SigSpecs in smashed dest module, for
-// a particular cycle. The dict holds a copy of the SigSpec, which will still be valid
-// after the register in the dest module is deleted.
+// This maps registers or memories in the original module to D or Q pin
+// SigSpecs in the smashed dest module, for a particular cycle. The dict holds
+// a copy of the SigSpec, which will still be valid after the register in the
+// dest module is deleted.
 typedef dict<RTLIL::Cell*, RTLIL::SigSpec> SigSpecDict;
 
 
@@ -262,7 +262,7 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 
 
 // Copy the src module's objects into the dest module, renaming them
-// based on the given cycle number.  The given RegDicts will be filled in.
+// based on the given cycle number.  The given RegDict will be filled in.
 void smash_module(RTLIL::Module *dest, RTLIL::Module *src, 
                   int cycle, RegDict& registers)
 {
@@ -328,9 +328,8 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
     }
 
 
-    // For FF cells, update the dict that maps the (cycle-independent) register
+    // For FF and memory cells, update the dict that maps the (cycle-independent) register
     // name to the new cell.  Later we will delete these cells.
-    // Do the same thing for memory cells.
     if (RTLIL::builtin_ff_cell_types().count(src_cell->type) > 0) {
       log_debug("Smashing %s cell %s for cycle %d\n",
                 src_cell->type.c_str(), src_cell->name.c_str(), cycle);
@@ -355,6 +354,52 @@ void smash_module(RTLIL::Module *dest, RTLIL::Module *src,
     dest->connect(new_conn);
   }
 
+}
+
+
+
+// This makes special modules that are used to represent memory read/write
+// access.  The only reason that the modules need to explicitly exist is to
+// define the port input/output directions.
+
+void
+makeMemoryAccessModules(RTLIL::Design *design)
+{
+  bool added = false;
+
+  if (!design->module(MEM_EXTRACT_MOD_NAME)) {
+    RTLIL::Module *mod = design->addModule(MEM_EXTRACT_MOD_NAME);
+    added = true;
+
+    mod->set_bool_attribute(MEM_MOD_ATTR);
+
+    mod->addWire(RTLIL::IdString("\\MEM_IN"))->port_input = true;
+    mod->addWire(RTLIL::IdString("\\ADDR"))->port_input = true;
+    mod->addWire(RTLIL::IdString("\\DATA"))->port_output = true;
+    mod->sort();
+    mod->fixup_ports();
+    mod->check();
+  }
+
+  if (!design->module(MEM_INSERT_MOD_NAME)) {
+    RTLIL::Module *mod = design->addModule(MEM_INSERT_MOD_NAME);
+    added = true;
+
+    mod->set_bool_attribute(MEM_MOD_ATTR);
+
+    mod->addWire(RTLIL::IdString("\\MEM_IN"))->port_input = true;
+    mod->addWire(RTLIL::IdString("\\MEM_OUT"))->port_output = true;
+    mod->addWire(RTLIL::IdString("\\ADDR"))->port_input = true;
+    mod->addWire(RTLIL::IdString("\\DATA"))->port_input = true;
+    mod->sort();
+    mod->fixup_ports();
+    mod->check();
+  }
+
+  if (added) {
+    design->sort();
+    design->check();
+  }
 }
 
 
@@ -683,7 +728,7 @@ bool split_mem(RTLIL::Cell *cell, RTLIL::Cell *orig_cell, int cycle,
   }
 
   RTLIL::Cell *extractor = mod->addCell(mod->uniquify(cell->name.str()+"_extract"),
-                                     RTLIL::IdString("\\func_extract_mem_extract"));
+                                        MEM_EXTRACT_MOD_NAME);
   extractor->setParam(ID::ABITS, cell->parameters[ID::ABITS]);
   extractor->setParam(ID::SIZE, cell->parameters[ID::SIZE]);
   extractor->setParam(ID::WIDTH, cell->parameters[ID::WIDTH]);
@@ -692,7 +737,7 @@ bool split_mem(RTLIL::Cell *cell, RTLIL::Cell *orig_cell, int cycle,
   extractor->setPort(RTLIL::IdString("\\DATA"), cell->getPort(ID::RD_DATA));
 
   RTLIL::Cell *inserter = mod->addCell(mod->uniquify(cell->name.str()+"_insert"),
-                                     RTLIL::IdString("\\func_extract_mem_insert"));
+                                       MEM_INSERT_MOD_NAME);
   inserter->setParam(ID::ABITS, cell->parameters[ID::ABITS]);
   inserter->setParam(ID::SIZE, cell->parameters[ID::SIZE]);
   inserter->setParam(ID::WIDTH, cell->parameters[ID::WIDTH]);
@@ -770,6 +815,8 @@ void unroll_module(RTLIL::Module *srcmod, RTLIL::Module *destmod, int num_cycles
 {
     auto_prefix = "";
     auto_name_map.clear();
+
+    makeMemoryAccessModules(destmod->design);
 
     // Copy the source module's attributes to it.
     for (auto &attr : srcmod->attributes) {
