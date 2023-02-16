@@ -72,6 +72,7 @@ private:
 
   llvm::IntegerType *llvmWidth(unsigned a);
 
+  llvm::VectorType *llvmVectorType(unsigned elemwidth, unsigned nelems);
 
   // Dangerous: only supports up to 64 bits.
   llvm::ConstantInt *llvmInt(uint64_t val, unsigned width);
@@ -84,6 +85,7 @@ private:
   llvm::UndefValue *llvmUndef(unsigned width);
   llvm::Value * llvmUndefValue(unsigned width); // Considers Options
 
+  unsigned getWidth(llvm::Type *ty);
   unsigned getWidth(llvm::Value *val);
 
   // Generate a value for a primary input 

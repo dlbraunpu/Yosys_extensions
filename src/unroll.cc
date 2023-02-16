@@ -373,9 +373,9 @@ makeMemoryAccessModules(RTLIL::Design *design)
 
     mod->set_bool_attribute(MEM_MOD_ATTR);
 
-    mod->addWire(RTLIL::IdString("\\MEM_IN"))->port_input = true;
-    mod->addWire(RTLIL::IdString("\\ADDR"))->port_input = true;
-    mod->addWire(RTLIL::IdString("\\DATA"))->port_output = true;
+    mod->addWire("\\MEM_IN")->port_input = true;
+    mod->addWire("\\ADDR")->port_input = true;
+    mod->addWire("\\DATA")->port_output = true;
     mod->sort();
     mod->fixup_ports();
     mod->check();
@@ -387,10 +387,10 @@ makeMemoryAccessModules(RTLIL::Design *design)
 
     mod->set_bool_attribute(MEM_MOD_ATTR);
 
-    mod->addWire(RTLIL::IdString("\\MEM_IN"))->port_input = true;
-    mod->addWire(RTLIL::IdString("\\MEM_OUT"))->port_output = true;
-    mod->addWire(RTLIL::IdString("\\ADDR"))->port_input = true;
-    mod->addWire(RTLIL::IdString("\\DATA"))->port_input = true;
+    mod->addWire("\\MEM_IN")->port_input = true;
+    mod->addWire("\\MEM_OUT")->port_output = true;
+    mod->addWire("\\ADDR")->port_input = true;
+    mod->addWire("\\DATA")->port_input = true;
     mod->sort();
     mod->fixup_ports();
     mod->check();
@@ -710,50 +710,64 @@ bool split_mem(RTLIL::Cell *cell, RTLIL::Cell *orig_cell, int cycle,
   log_debug("\nSplitting memory cell '%s'. Size %d  Width %d\n",
             cell->name.c_str(), size, width);
 
-  // Create Wires for each element of the memory, and make SigSpecs that will 
+  RTLIL::IdString cellname = cell->name;
+
+  // Rename the cell, because we want to create a wire of the same name.
+  // The cell gets deleted at the end of this function, so the actual name is
+  // irrelevant.
+  mod->rename(cell, mod->uniquify("$dying_cyclized_mem_cell"));
+
+  // Create Wires that represent the memory, and make SigSpecs that will 
   // be used to connect all of them between cycles.
   RTLIL::SigSpec sig_d;
   RTLIL::SigSpec sig_q;
-  for (int j=0; j < size; ++j) {
-    std::string mem_name = orig_cell->name.str();
-    std::string suffix = "["+std::to_string(j)+"]";
 
-    RTLIL::IdString wd_name = mod->uniquify(cycleize_name(mem_name+"_d"+suffix, cycle));
-    RTLIL::Wire *wd = mod->addWire(wd_name, width);
-    sig_d.append(wd);
+  // Make two really wide wires to represent the entire memory.
+  // Add attributes to identify them as vectors of signals, for the benefit of
+  // LLVM.
+  std::string mem_name = orig_cell->name.str();
 
-    RTLIL::IdString wq_name = mod->uniquify(cycleize_name(mem_name+suffix, cycle));
-    RTLIL::Wire *wq = mod->addWire(wq_name, width);
-    sig_q.append(wq);
-  }
+  RTLIL::IdString wd_name = mod->uniquify(cycleize_name(mem_name+"_d", cycle));
+  RTLIL::Wire *wd = mod->addWire(wd_name, width*size);
+  wd->set_string_attribute("\\vector_size", std::to_string(size));
+  wd->set_string_attribute("\\vector_width", std::to_string(width));
+  sig_d.append(wd);
 
-  RTLIL::Cell *extractor = mod->addCell(mod->uniquify(cell->name.str()+"_extract"),
+  RTLIL::IdString wq_name = mod->uniquify(cycleize_name(mem_name, cycle));
+  RTLIL::Wire *wq = mod->addWire(wq_name, width*size);
+  wq->set_string_attribute("\\vector_size", std::to_string(size));
+  wq->set_string_attribute("\\vector_width", std::to_string(width));
+  sig_q.append(wq);
+
+  RTLIL::Cell *extractor = mod->addCell(mod->uniquify(cellname.str()+"_extract"),
                                         MEM_EXTRACT_MOD_NAME);
   extractor->setParam(ID::ABITS, cell->parameters[ID::ABITS]);
   extractor->setParam(ID::SIZE, cell->parameters[ID::SIZE]);
   extractor->setParam(ID::WIDTH, cell->parameters[ID::WIDTH]);
-  extractor->setPort(RTLIL::IdString("\\MEM_IN"), sig_q);
-  extractor->setPort(RTLIL::IdString("\\ADDR"), cell->getPort(ID::RD_ADDR));
-  extractor->setPort(RTLIL::IdString("\\DATA"), cell->getPort(ID::RD_DATA));
+  extractor->setPort("\\MEM_IN", sig_q);
+  extractor->setPort("\\ADDR", cell->getPort(ID::RD_ADDR));
+  extractor->setPort("\\DATA", cell->getPort(ID::RD_DATA));
 
-  RTLIL::Cell *inserter = mod->addCell(mod->uniquify(cell->name.str()+"_insert"),
+  RTLIL::Cell *inserter = mod->addCell(mod->uniquify(cellname.str()+"_insert"),
                                        MEM_INSERT_MOD_NAME);
   inserter->setParam(ID::ABITS, cell->parameters[ID::ABITS]);
   inserter->setParam(ID::SIZE, cell->parameters[ID::SIZE]);
   inserter->setParam(ID::WIDTH, cell->parameters[ID::WIDTH]);
-  inserter->setPort(RTLIL::IdString("\\MEM_IN"), sig_q);
-  inserter->setPort(RTLIL::IdString("\\ADDR"), cell->getPort(ID::WR_ADDR));
-  inserter->setPort(RTLIL::IdString("\\DATA"), cell->getPort(ID::WR_DATA));
+  inserter->setPort("\\MEM_IN", sig_q);
+  inserter->setPort("\\ADDR", cell->getPort(ID::WR_ADDR));
+  inserter->setPort("\\DATA", cell->getPort(ID::WR_DATA));
 
   // Make a really wide wire to connect the extractor output to the write
   // enable mux
-  RTLIL::IdString wmux_name = mod->uniquify(cell->name.str()+"_wmux");
+  RTLIL::IdString wmux_name = mod->uniquify(cellname.str()+"_wmux");
   RTLIL::Wire *wmux = mod->addWire(wmux_name, width*size);
+  wmux->set_string_attribute("\\VECTOR_SIZE", std::to_string(size));
+  wmux->set_string_attribute("\\VECTOR_WIDTH", std::to_string(width));
 
-  inserter->setPort(RTLIL::IdString("\\MEM_OUT"), wmux);
+  inserter->setPort("\\MEM_OUT", wmux);
 
   // Make a really wide mux
-  RTLIL::Cell *mux = mod->addCell(mod->uniquify(cell->name.str()+"_mux"), ID($mux));
+  RTLIL::Cell *mux = mod->addCell(mod->uniquify(cellname.str()+"_mux"), ID($mux));
   log_debug("Added memory write mux %s\n", mux->name.c_str());
   mux->setParam(ID::WIDTH, width*size);
 

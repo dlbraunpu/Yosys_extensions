@@ -110,6 +110,12 @@ LLVMWriter::llvmWidth(unsigned a) {
 }
 
 
+llvm::VectorType *
+LLVMWriter::llvmVectorType(unsigned elemwidth, unsigned nelems) {
+  return llvm::VectorType::get(llvmWidth(elemwidth), nelems, false /*scalable*/);
+}
+
+
 // Dangerous: only supports up to 64 bits.
 llvm::ConstantInt *
 LLVMWriter::llvmInt(uint64_t val, unsigned width)
@@ -157,7 +163,28 @@ LLVMWriter::llvmUndefValue(unsigned width)
 unsigned
 LLVMWriter::getWidth(llvm::Value *val)
 {
-  return val->getType()->getIntegerBitWidth();
+  if (val->getType()->isVectorTy()) {
+    llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(val->getType());
+    return getWidth(vecTy->getElementType()) * vecTy->getElementCount().getFixedValue();
+  }
+  if (val->getType()->isIntegerTy()) {
+    return val->getType()->getIntegerBitWidth();
+  }
+  log("Odd type %d\n", val->getType()->getTypeID());
+  log_flush();
+  log_assert(false);
+
+  //return getWidth(val->getType());
+}
+
+
+unsigned
+LLVMWriter::getWidth(llvm::Type *ty)
+{
+  if (llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(ty)) {
+    return getWidth(vecTy->getElementType()) * vecTy->getElementCount().getFixedValue();
+  }
+  return ty->getIntegerBitWidth();
 }
 
 
@@ -807,16 +834,52 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 llvm::Value *
 LLVMWriter::generateMagicCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 {
+  // These port names need to be consistent with the code in unroll.cc that creates
+  // these cells.
+  const RTLIL::IdString ADDR("\\ADDR");
+  const RTLIL::IdString DATA("\\DATA");
+  const RTLIL::IdString MEM_IN("\\MEM_IN");
+  const RTLIL::IdString MEM_OUT("\\MEM_OUT");
+
+  unsigned memWidth = (unsigned)(cell->parameters[ID::WIDTH].as_int());
+  unsigned memSize = (unsigned)(cell->parameters[ID::SIZE].as_int());
+  unsigned addrSize = (unsigned)(cell->parameters[ID::ABITS].as_int());
+
+  unsigned sigWidthAddr = (unsigned)(cell->getPort(ADDR).size());  // Size of SigSpec
+  unsigned sigWidthData = (unsigned)(cell->getPort(DATA).size());  // Size of SigSpec
+  unsigned sigWidthMemIn = (unsigned)(cell->getPort(MEM_IN).size());  // Size of SigSpec
+
+  log_assert(sigWidthAddr == addrSize);
+  log_assert(sigWidthData == memWidth);
+  log_assert(sigWidthMemIn == memWidth*memSize);
+
+  // Create or find the Value at the address input
+  llvm::Value *valAddr = generateInputValue(cell, ADDR); 
+  log_assert(getWidth(valAddr) == addrSize);
+
+  // Create or find the Value at the MEM_IN input
+  llvm::Value *valMemIn = generateInputValue(cell, MEM_IN);
+  log_assert(getWidth(valMemIn) == memWidth*memSize);
+
   if (cell->type == MEM_EXTRACT_MOD_NAME) {
+    // Return the extract value (which goes out the DATA signal).
+    log_assert(port == DATA);
+    return b->CreateExtractElement(valMemIn, valAddr);
 
   } else if (cell->type == MEM_INSERT_MOD_NAME) {
+    // Get the data value to be inserted
+    llvm::Value *valData = generateInputValue(cell, DATA);
+    log_assert(getWidth(valData) == memWidth);
+
+    // Do the insert and return the updated memory value
+    // (which goes out the MEM_OUT signal).
+    log_assert(port == MEM_OUT);
+    return b->CreateInsertElement(valMemIn, valData, valAddr);
 
   } else {
     assert(false);
+    return nullptr;
   }
-
-  return llvmZero(1);
-
 }
 
 
@@ -1195,7 +1258,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
                                  const Yosys::dict<std::string, unsigned>& targetVectors,
                                  int retWidth) // Zero for void, negative for array
 {
-  std::vector<llvm::Type *> argTy;
+  std::vector<llvm::Type *> argTypes;
 
   // Add every module input port, which includes the first-cycle register inputs
   // and the unrolled versions of the original input ports.
@@ -1205,7 +1268,17 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     // Skip ASVs in register arrays.
     if (!port->has_attribute(TARGET_VECTOR_ATTR)) {
       if (port->port_input) {
-        argTy.push_back(llvmWidth(port->width));
+        if (port->has_attribute("\\vector_width")) {
+          // The port represents an entire memory, in which case it will 
+          // have an LLVM vector type.
+          unsigned width = std::stoi(port->get_string_attribute("\\vector_width"));
+          unsigned size = std::stoi(port->get_string_attribute("\\vector_size"));
+          log_assert(port->width == width*size);
+          argTypes.push_back(llvmVectorType(width, size));
+        } else {
+          // A regular scalar integer.
+          argTypes.push_back(llvmWidth(port->width));
+        }
       }
     }
   }
@@ -1219,10 +1292,10 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     // the width here.
     uint32_t paddedWidth = funcExtract::get_padded_width(width);
     llvm::Type *paddedArrayElementTy = llvmWidth(paddedWidth);
-    argTy.push_back(llvm::PointerType::getUnqual(paddedArrayElementTy));
+    argTypes.push_back(llvm::PointerType::getUnqual(paddedArrayElementTy));
 
     // Unfortunately in LLVM 13.0.1, 'opt -O3' crashes if we use an opaque pointer here.
-    //argTy.push_back(llvm::PointerType::getUnqual(*c));
+    //argTypes.push_back(llvm::PointerType::getUnqual(*c));
   }
 
   // If the target is a register array, add one more arg that is a pointer to its storage.
@@ -1231,17 +1304,17 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
     uint32_t paddedWidth = funcExtract::get_padded_width(-retWidth);
     llvm::Type *paddedArrayElementTy = llvmWidth(paddedWidth);
-    argTy.push_back(llvm::PointerType::getUnqual(paddedArrayElementTy));
+    argTypes.push_back(llvm::PointerType::getUnqual(paddedArrayElementTy));
 
     // Unfortunately in LLVM 13.0.1, 'opt -O3' crashes if we use an opaque pointer here.
-    // argTy.push_back(llvm::PointerType::getUnqual(*TheContext));
+    // argTypes.push_back(llvm::PointerType::getUnqual(*TheContext));
   }
 
   // A return type of the correct width (possibly void)
   llvm::Type* retTy = retWidth > 0 ? llvmWidth(retWidth) : llvm::Type::getVoidTy(*c);
 
   llvm::FunctionType *functype =
-    llvm::FunctionType::get(retTy, argTy, false);
+    llvm::FunctionType::get(retTy, argTypes, false);
 
   // Create the main function
   llvm::Function::LinkageTypes linkage = llvm::Function::ExternalLinkage;
