@@ -170,11 +170,11 @@ LLVMWriter::getWidth(llvm::Value *val)
   if (val->getType()->isIntegerTy()) {
     return val->getType()->getIntegerBitWidth();
   }
+
   log("Odd type %d\n", val->getType()->getTypeID());
   log_flush();
   log_assert(false);
-
-  //return getWidth(val->getType());
+  return 0;
 }
 
 
@@ -394,8 +394,8 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   // Sanity check: pin widths match driver/load widths.
   // Also that reduce cells have output width of 1.
 
-  log_assert(sigWidthY == sigWidthA || sigWidthY == 1);
-  log_assert(cellWidthY == cellWidthA || cellWidthY == 1);
+  //log_assert(sigWidthY == sigWidthA || sigWidthY == 1); // not necessarily true
+  //log_assert(cellWidthY == cellWidthA || cellWidthY == 1);
   log_assert(sigWidthA == cellWidthA);
   log_assert(sigWidthY == cellWidthY);
   log_assert(valWidthA == cellWidthA);
@@ -432,10 +432,13 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   } else if (cell->type == ID($neg)) {
     return b->CreateNeg(valA);
   } else if (cell->type == ID($reduce_and)) {
+    log_assert(cellWidthY == 1);
     return b->CreateICmpEQ(b->CreateNot(valA), llvmZero(valWidthA));
   } else if (cell->type == ID($reduce_or) || cell->type == ID($reduce_bool)) {
+    log_assert(cellWidthY == 1);
     return b->CreateICmpNE(valA, llvmZero(valWidthA));
   } else if (cell->type == ID($reduce_xor)) {
+    log_assert(cellWidthY == 1);
     // A trickier operation: XOR, a parity calculation.
     // Need to declare and use the llvm.ctpop intrinsic function.
     std::vector<llvm::Type *> arg_type;
@@ -444,6 +447,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     llvm::Value *popcnt = b->CreateCall(fun, valA);
     return b->CreateTrunc(popcnt, llvmWidth(1));  // Return low-order bit
   } else if (cell->type == ID($reduce_xnor)) {
+    log_assert(cellWidthY == 1);
     // Same as reduce_xor, plus invert.
     std::vector<llvm::Type *> arg_type;
     arg_type.push_back(llvmWidth(valWidthA));
@@ -451,6 +455,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     llvm::Value *popcnt = b->CreateCall(fun, valA);
     return b->CreateNot(b->CreateTrunc(popcnt, llvmWidth(1)));  // Return inverted low-order bit
   } else if (cell->type == ID($logic_not)) {
+    log_assert(cellWidthY == 1);
     return b->CreateICmpEQ(valA, llvmZero(valWidthA));
   } 
 
@@ -561,12 +566,18 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   } else if (cell->type == ID($xnor)) {
     return b->CreateNot(b->CreateXor(valA, valB));
   } else if (cell->type == ID($shl)) {
+    log_assert(!signedB);
     return b->CreateShl(valA, valB);
   } else if (cell->type == ID($shr)) {
+    log_assert(!signedB);
     return b->CreateLShr(valA, valB);
   } else if (cell->type == ID($sshl)) {
+    log_assert(signedA);  // Is this actually required?
+    log_assert(!signedB);
     return b->CreateShl(valA, valB);  // Same as $shl
   } else if (cell->type == ID($sshr)) {
+    log_assert(signedA);  // Is this actually required?
+    log_assert(!signedB);
     return b->CreateAShr(valA, valB);
   } else if (cell->type == ID($logic_and)) {
     if (isZero(valA) || isZero(valB)) {
@@ -604,9 +615,19 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   } else if (cell->type == ID($mod)) {
     return b->CreateUDiv(valA, valB);
 
-    // TODO: $shift and $shiftx, $divfloor, etc.
-    // TODO: See above about logic operators with Y width > 1
-  } 
+    // TODO: $divfloor, etc.
+  } else if (cell->type == ID($shift) || cell->type == ID($shiftx)) {
+    // Logical left shift, or right shift if B is negative.
+    // $shiftx is supposed to shift in x bits instead of zeros.
+    if (!signedB) {
+      return b->CreateLShr(valA, valB);
+    } else {
+      llvm::Value *shiftR = b->CreateLShr(valA, valB); // Assuming B >= 0
+      llvm::Value *shiftL = b->CreateShl(valA, b->CreateNeg(valB));  // Assuming B < 0
+      llvm::Value *bIsNeg = b->CreateICmpSLT(valB, llvmZero(valWidthB));
+      return b->CreateSelect(bIsNeg, shiftL, shiftR, "shift_select");
+    }
+  }
 
   log_error("Unsupported binary cell %s\n", cell->type.c_str());
   return valA;
@@ -1253,10 +1274,33 @@ LLVMWriter::generateDestValue(RTLIL::Wire *wire)
 
 
 
+// Get the LLVM type of a particular Yosys port.  Usually it is an
+// integer of some width, but it could also be an LLVM Vector, if
+// the port represents a Verilog memory array.
+
+llvm::Type*
+LLVMWriter::getLlvmType(RTLIL::Wire *port)
+{
+  if (port->has_attribute("\\vector_width")) {
+    // The port represents an entire memory, in which case it will 
+    // have an LLVM vector type.
+    int width = std::stoi(port->get_string_attribute("\\vector_width"));
+    int size = std::stoi(port->get_string_attribute("\\vector_size"));
+    log_assert(port->width == width*size);
+    return llvmVectorType(width, size);
+  }
+
+  // A regular scalar integer.
+  return llvmWidth(port->width);
+}
+
+
+
 llvm::Function*
 LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod,
                                  const Yosys::dict<std::string, unsigned>& targetVectors,
-                                 int retWidth) // Zero for void, negative for array
+                                 int retWidth,    // Zero for void, negative for array
+                                 int retVecSize)  // Non-zero only for LLVM vector return type
 {
   std::vector<llvm::Type *> argTypes;
 
@@ -1268,17 +1312,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     // Skip ASVs in register arrays.
     if (!port->has_attribute(TARGET_VECTOR_ATTR)) {
       if (port->port_input) {
-        if (port->has_attribute("\\vector_width")) {
-          // The port represents an entire memory, in which case it will 
-          // have an LLVM vector type.
-          unsigned width = std::stoi(port->get_string_attribute("\\vector_width"));
-          unsigned size = std::stoi(port->get_string_attribute("\\vector_size"));
-          log_assert(port->width == width*size);
-          argTypes.push_back(llvmVectorType(width, size));
-        } else {
-          // A regular scalar integer.
-          argTypes.push_back(llvmWidth(port->width));
-        }
+        argTypes.push_back(getLlvmType(port));
       }
     }
   }
@@ -1310,8 +1344,16 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     // argTypes.push_back(llvm::PointerType::getUnqual(*TheContext));
   }
 
-  // A return type of the correct width (possibly void)
-  llvm::Type* retTy = retWidth > 0 ? llvmWidth(retWidth) : llvm::Type::getVoidTy(*c);
+  // A return type of the correct width (possibly a LLVM Vector, or void)
+  llvm::Type* retTy;
+  if (retVecSize > 0) {
+    log_assert(retWidth > 0);
+    retTy = llvmVectorType(retWidth, retVecSize);
+  } else if (retWidth > 0) {
+    retTy = llvmWidth(retWidth);
+  } else {
+    retTy = llvm::Type::getVoidTy(*c); // Result is returned via additional arg added above.
+  }
 
   llvm::FunctionType *functype =
     llvm::FunctionType::get(retTy, argTypes, false);
@@ -1409,7 +1451,32 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
       return;
     }
 
-    llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors, targetPort->width);
+    int targetWidth;
+    int targetVecSize;
+
+    // Figure out the target's width and vector size
+    llvm::Type *targetType = getLlvmType(targetPort);
+    if (targetType->isIntegerTy()) {
+      targetWidth = getWidth(targetType);
+      targetVecSize = 0;
+    } else if (targetType->isVectorTy()) {
+      llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(targetType);
+      targetWidth = getWidth(vecTy->getElementType());
+      targetVecSize = vecTy->getElementCount().getFixedValue();
+    } else {
+      targetWidth = 0;
+      targetVecSize = 0;
+      log_assert(false);
+    }
+
+    if (targetVecSize > 0) {
+      log("Memory array target %s\n", targetName.c_str());
+    } else {
+      log("Scalar target %s\n", targetName.c_str());
+    }
+
+    llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors,
+                                    targetWidth, targetVecSize);
 
     // basic block
     llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, "bb_;_"+targetName, llvmFunc);
@@ -1440,7 +1507,8 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
     log_flush();
 
     // Scan over all the input ports, and process all the ones belonging to
-    // the given target vector
+    // the given target vector.  The target element width is taken from the first
+    // element we find.
     for (RTLIL::IdString portname : unrolledRtlMod->ports) {
       RTLIL::Wire *targetPort = unrolledRtlMod->wire(portname);
       if (targetPort->get_string_attribute(TARGET_VECTOR_ATTR) == cycleizedTargetName) {
@@ -1461,7 +1529,8 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
 
         // We cannot declare the function until we know the width of the targets
         if (!llvmFunc) {
-          llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors, -(targetPort->width));
+          llvmFunc = generateFunctionDecl(funcName, unrolledRtlMod, targetVectors,
+                                          -(targetPort->width), 0);
 
           // Get the function argument that points to where the return values go.
           returnValueArray = llvmFunc->getValueSymbolTable()->lookup(

@@ -133,10 +133,12 @@ private:
   // The wire represents a target ASV, and is not NOT necessarily a port
   llvm::Value *generateDestValue(Yosys::RTLIL::Wire *wire);
 
+  llvm::Type* getLlvmType(Yosys::RTLIL::Wire *port);
+
   llvm::Function*
   generateFunctionDecl(const std::string& funcName, Yosys::RTLIL::Module *mod,
                        const Yosys::dict<std::string, unsigned>& targetVectors,
-                       int retWidth);
+                       int retWidth, int retVecSize);
 
 
 };
