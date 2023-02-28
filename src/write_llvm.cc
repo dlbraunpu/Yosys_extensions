@@ -505,6 +505,8 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   // Also that reduce cells have output width of 1.
   
   // I have seen correct cells where Y is narrower than A or B.
+  // But the port width parameters on the cell should always match
+  // the widths of the connected signals.
   log_assert(sigWidthA == cellWidthA);
   log_assert(sigWidthB == cellWidthB);
   log_assert(sigWidthY == cellWidthY);
@@ -532,15 +534,20 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   // Presumably the width of an input pin's Value was correctly set when it
   // was generated from the corresponding SigSpec.
   // TODO: Can truncating ever be necessary?
-  unsigned workingWidth = std::max({cellWidthA, cellWidthB, cellWidthY, valWidthA, valWidthB});
+  unsigned workingWidth = 0;
+  if (cell->type.in(ID($and), ID($or), ID($xor), ID($xnor), ID($add), ID($sub))) {
+    workingWidth = cellWidthY;
+  } else {
+    workingWidth = std::max({cellWidthA, cellWidthB, cellWidthY, valWidthA, valWidthB});
+  }
 
-  if (valWidthA < workingWidth) {
+  if (valWidthA != workingWidth) {
     valA = signedA ? b->CreateSExtOrTrunc(valA, llvmWidth(workingWidth)) :
                      b->CreateZExtOrTrunc(valA, llvmWidth(workingWidth));
     valWidthA = getWidth(valA);
   }
 
-  if (valWidthB < workingWidth) {
+  if (valWidthB != workingWidth) {
     valB = signedB ? b->CreateSExtOrTrunc(valB, llvmWidth(workingWidth)) :
                      b->CreateZExtOrTrunc(valB, llvmWidth(workingWidth));
     valWidthB = getWidth(valB);
@@ -965,18 +972,21 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 
   // TODO: Do any necessary width adjustments to result here?
 
-  // If the new Value is an Instruction driving a single wire, optionally give
-  // it an explicit name.  But don't re-name things, and don't try to name
+  // If the new Value is an Instruction, optionally give it an
+  // explicit name.  But don't re-name things, and don't try to name
   // non-Instructions, especially function args.  Depending on options
   // settings, the name (if any) will be based on the cell or wire name.
-  // BTW, cell names are mostly auto-generated, not user-defined.
+  // BTW, Yosys cell names are mostly auto-generated, not user-defined.
 
-  if (llvm::isa<llvm::Instruction>(val) && val->getName().empty() && outputSig.is_wire()) {
-    RTLIL::IdString valName = opts.cell_based_llvm_value_names ? cell->name :
-                                outputSig.as_wire()->name;
-    if (opts.verbose_llvm_value_names || valName[0] != '$') { 
-      // Default: use only user defined wire names
-      val->setName(internalToLLVM(valName));
+  if (llvm::isa<llvm::Instruction>(val) && val->getName().empty()) {
+    if (opts.cell_based_llvm_value_names) {
+      val->setName(internalToLLVM(cell->name));
+    } else if (outputSig.is_wire()) {
+      RTLIL::IdString valName = outputSig.as_wire()->name;
+      if (opts.verbose_llvm_value_names || valName[0] != '$') { 
+        // Default: use only user defined wire names
+        val->setName(internalToLLVM(valName));
+      }
     }
   }
 
@@ -1037,19 +1047,28 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
   }
 
   // OK, the chunk is a slice of a wire or cell output.
+  log_assert (chunk.size() <= chunk.object_width() - chunk.offset); // Basic sanity check
 
   if (offset == chunk.offset) {
     // The signal bits do not need to be shifted - we just have to zero-extend
-    // or truncate it, and maybe zero out some low-order bits.
-    // A typical exmaple: { \reg_next_pc___#1_ [31:2], 2'h0 }
+    // and/or truncate it, and maybe zero out some low-order bits.
+    // A typical example: { \reg_next_pc___#1_ [31:2], 2'h0 }
 
     // Find or make a Value for the entire wire or cell output
     DriverSpec objDs = chunk.wire ? DriverSpec(chunk.wire) : DriverSpec(chunk.cell, chunk.port);
     log_assert(objDs.is_cell() || objDs.is_wire());
-    llvm::Value *objVal = generateValue(objDs);  // Will be added to valueCache
+    llvm::Value *val = generateValue(objDs);  // Will be added to valueCache
 
-    // Adjust its width
-    llvm::Value *val = b->CreateZExtOrTrunc(objVal, llvmWidth(totalWidth));
+    // Truncate any unwanted high-order bits
+    if (getWidth(val) > (unsigned)(chunk.size()+chunk.offset)) {
+      val = b->CreateTrunc(val, llvmWidth(chunk.size()+chunk.offset));
+    }
+
+    // Zero-extend it if necessary to the desired total width
+    log_assert(getWidth(val) <= (unsigned)totalWidth);
+    if (getWidth(val) < (unsigned)totalWidth) {
+      val = b->CreateZExt(val, llvmWidth(totalWidth));
+    }
 
     // Mask off the low-order bits as required
     if (offset > 0) {
@@ -1091,9 +1110,8 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
     }
 
     // Truncate the value if necessary
-    log_assert (chunk.width <= chunk.object_width() - chunk.offset); // Basic sanity check
-    if ((unsigned)chunk.width != getWidth(val)) {
-      val = b->CreateZExtOrTrunc(val, llvmWidth(chunk.width));
+    if (getWidth(val) > (unsigned)chunk.size()) {
+      val = b->CreateTrunc(val, llvmWidth(chunk.size()));
     }
 
     // If we actually did any shifting or truncating, add the new Value to valueCache.
@@ -1110,8 +1128,8 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
   }
 
   // Extend before shifting!
-  if ((unsigned)totalWidth != getWidth(val)) {
-    val = b->CreateZExtOrTrunc(val, llvmWidth(totalWidth));
+  if (getWidth(val) < (unsigned)totalWidth) {
+    val = b->CreateZExt(val, llvmWidth(totalWidth));
   }
 
   if (offset > 0) {
