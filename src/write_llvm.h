@@ -28,7 +28,7 @@ public:
     bool use_poison = false;
   };
 
-  LLVMWriter(const Options& options);
+  LLVMWriter(Yosys::RTLIL::Design *des, const Options& options);
   ~LLVMWriter();
 
   void write_llvm_ir(Yosys::RTLIL::Module *unrolledRtlMod,
@@ -39,7 +39,7 @@ public:
                       std::string llvmFileName,
                       std::string funcName);
 
-  void reset();
+  void clearFunctionData();
 
 private:
 
@@ -60,6 +60,7 @@ private:
   };
 
 
+  Yosys::RTLIL::Design *design;
   std::unique_ptr<llvm::LLVMContext> c;
   std::unique_ptr<llvm::IRBuilder<>> b;
   llvm::Module *llvmMod;
@@ -112,6 +113,12 @@ private:
   llvm::Value *generateMagicCellOutputValue(Yosys::RTLIL::Cell *cell,
                                             Yosys::RTLIL::IdString port);
 
+  llvm::Value *generateFFCellOutputValue(Yosys::RTLIL::Cell *cell);
+
+  llvm::Value *
+  generateUserDefinedCellOutputValue(Yosys::RTLIL::Cell *cell,
+                                     Yosys::RTLIL::IdString port);
+
   // Create a Value representing the output port of the given cell.
   // Since this is not given a DriverSpec, it does not touch the valueCache.
   // The caller is reponsible for that.
@@ -139,6 +146,34 @@ private:
   generateFunctionDecl(const std::string& funcName, Yosys::RTLIL::Module *mod,
                        const Yosys::dict<std::string, unsigned>& targetVectors,
                        int retWidth, int retVecSize);
+
+  llvm::Function*
+  writeMainFunction(Yosys::RTLIL::Module *unrolledRtlMod,
+                    std::string targetName,  // As specified in allowed_target.txt
+                    bool targetIsVec,       // target is ASV vector
+                    int num_cycles,
+                    std::string funcName);
+
+  bool isProperSubModule(Yosys::RTLIL::Module *mod);
+
+  llvm::Function*
+  generateSubFunctionDecl(Yosys::RTLIL::Module *mod,
+                          Yosys::RTLIL::Wire *returnPort);
+
+  std::string
+  getSubFunctionName(Yosys::RTLIL::Module *submod,
+                     Yosys::RTLIL::IdString returnPortName);
+
+
+  llvm::Function*
+  writeSubFunction(Yosys::RTLIL::Module *submod,
+                   Yosys::RTLIL::IdString returnPortName);
+
+  void
+  writeSubFunctions(Yosys::RTLIL::Module *submod);
+
+  void
+  recurseSubFunctions(Yosys::RTLIL::Module *mod);
 
 
 };

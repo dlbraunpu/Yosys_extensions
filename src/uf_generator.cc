@@ -504,7 +504,7 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   llvmOpts.use_poison = m_opts.use_poison;
 
 
-  LLVMWriter writer(llvmOpts);
+  LLVMWriter writer(m_des, llvmOpts);
   writer.write_llvm_ir(unrolledMod, targetName, isVector, origModName,
                       num_cycles, fileName, funcName);
   log("LLVM result written to %s\n", fileName.c_str());
@@ -568,8 +568,8 @@ uint32_t YosysModuleInfo::get_var_width_cmplx(const std::string& var)
     std::string modName = var.substr(0, pos);
     std::string varName = var.substr(pos+1);
     if (!is_module(modName)) {
-      log_error("Error: module %s not found\n", modName.c_str());
-      abort();
+      log_warning("get_var_width_cmplx: no such module %s\n", modName.c_str());
+      return get_var_width_simp(var, "");
     }
     RTLIL::Module *subMod = m_des->module(verilogToInternal(modName));
     return get_var_width_simp(varName, subMod->name.str());

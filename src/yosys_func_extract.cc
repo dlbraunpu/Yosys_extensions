@@ -77,6 +77,7 @@ struct FuncExtractCmd : public Pass {
 
     bool write_llvm = true;
     bool read_rst = true;
+    bool force = false;
 
     YosysUFGenerator::Options ufGenOpts;
     ufGenOpts.save_unrolled = false;
@@ -109,6 +110,8 @@ struct FuncExtractCmd : public Pass {
         ufGenOpts.cell_based_llvm_value_names = true;
       } else if (arg == "-no_rst") {
         read_rst = false;
+      } else if (arg == "-force") {
+        force = true;
       } else if (arg == "-path" && argidx < args.size()-1) {
         ++argidx;
         taintGen::g_path = args[argidx];
@@ -120,7 +123,9 @@ struct FuncExtractCmd : public Pass {
 
     funcExtract::read_config(taintGen::g_path+"/config.txt");
 
-    taintGen::g_verb = ys_debug();  // Override setting from config.txt
+    // Override settings from config.txt
+    if (ys_debug()) taintGen::g_verb = true;
+    if (force) funcExtract::g_overwrite_existing_llvm = true; 
 
     // read instr.txt, result in g_instrInfo:
     // instruction encodings, write/read ASV, NOP

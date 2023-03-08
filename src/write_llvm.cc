@@ -41,8 +41,9 @@ namespace funcExtract {
 USING_YOSYS_NAMESPACE  // Does "using namespace"
 
 
-LLVMWriter::LLVMWriter(const Options &options) 
+LLVMWriter::LLVMWriter(RTLIL::Design *des, const Options &options) 
 {
+  design = des;
   opts = options;
   c = std::make_unique<llvm::LLVMContext>();
   b = std::make_unique<llvm::IRBuilder<>>(*c);
@@ -54,14 +55,14 @@ LLVMWriter::~LLVMWriter()
 {
 }
 
+
+// Call this before and after writing each function of an LLVM Module.
 void
-LLVMWriter::reset()
+LLVMWriter::clearFunctionData()
 {
   finder.clear();
   valueCache.clear();
-  if (llvmMod) delete llvmMod;
-  llvmMod = nullptr;  
-  llvmFunc = nullptr; // Deleting the module deletes this.
+  llvmFunc = nullptr; 
 }
 
 
@@ -911,6 +912,54 @@ LLVMWriter::generateMagicCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port
 }
 
 
+llvm::Value *
+LLVMWriter::generateUserDefinedCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
+{
+  // If possible, execute a function call to a function previously defined for this cell/output
+  RTLIL::Module *submod = design->module(cell->type);
+  std::string subFuncName = getSubFunctionName(submod, port);
+  llvm::Function *func = llvmMod->getFunction(subFuncName);
+
+  if (!func) {
+    log_warning("No function defined for non-builtin cell %s type %s\n",
+                cell->name.c_str(), cell->type.c_str());
+    RTLIL::SigSpec outputSig = cell->getPort(port);
+    return llvmZero(outputSig.size());  // Dummy value  
+  }
+
+  std::vector<llvm::Value*> args;
+  for (RTLIL::IdString portname : submod->ports) {
+    RTLIL::Wire *port = submod->wire(portname);
+    log_assert(port);
+    if (port->port_input) {
+      llvm::Value *argVal = generateInputValue(cell, portname);
+      args.push_back(argVal);
+    }
+  }
+
+  // TODO: Check that args and their types match the function's type?
+  // Any error should get flagged downstream by verifyFunction() or opt.
+
+  return b->CreateCall(func, args);
+}
+
+llvm::Value *
+LLVMWriter::generateFFCellOutputValue(RTLIL::Cell *cell)
+{
+  // FF cells should not exist in the unrolled design.
+  // But when generatin sub-functions, we can tolerate FFs that
+  // drive a sub-module output port.
+
+  log_warning("Unsupported FF cell %s type %s\n",
+              cell->name.c_str(), cell->type.c_str());
+
+  // Pass the D input through the FF.  This is really only
+  // acceptable for simple dffs that drive sub-function outputs.
+  llvm::Value *valD = generateInputValue(cell, ID::D);  // Get D input
+  return valD;
+}
+
+
 // Create a Value representing the output port of the given cell.
 // Since this is not given a DriverSpec, it does not touch the valueCache.
 // The caller is reponsible for that.
@@ -919,31 +968,39 @@ llvm::Value *
 LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
 {
   // This function handles only builtin cells and a couple of magic cells we create.
-  // Hierarchical modules are a different thing.
+  // Hierarchical modules are supported in a limited way.
 
-  if (cell->type[0] != '$') {
-    // See if the cell is one of our magic ones.
-    RTLIL::Module *m = cell->module->design->module(cell->type);
+  RTLIL::SigSpec outputSig = cell->getPort(port);
+
+  if (cell->type[0] == '\\') {
+    // See if the user-defined cell is one of our magic ones.
+    RTLIL::Module *m = design->module(cell->type);
     if (m && m->get_bool_attribute(MEM_MOD_ATTR)) {
       return generateMagicCellOutputValue(cell, port);
     } else {
-      log_error("Unsupported non-builtin cell %s\n", cell->name.c_str());
-      return nullptr;
+      return generateUserDefinedCellOutputValue(cell, port);
     }
   }
 
-  // All builtin cell outputs are supposed to be Y
-  log_assert(port == ID::Y);
-  log_assert(cell->output(port));
+  // Special case: built-in FF cells.
+  if (RTLIL::builtin_ff_cell_types().count(cell->type) != 0) {
+    return generateFFCellOutputValue(cell);
+  }
 
-  RTLIL::SigSpec outputSig = cell->getPort(ID::Y);
+
+  // All builtin combinatorial cell outputs are supposed to be Y
+  if (port != ID::Y) {
+    log_warning("Cell %s type %s has non-Y output!\n",
+                        cell->name.c_str(), cell->type.c_str());
+    return llvmZero(outputSig.size());  // Dummy value  
+  }
+
+  log_assert(cell->output(port));
 
   log_debug("generateCellOutputValue(): cell port %s Y  width %d:\n",
       cell->name.c_str(), outputSig.size());
   log_flush();
 
-  // All builtin cell outputs are supposed to be Y
-  log_assert(port == ID::Y);
   log_assert(cell->output(port));
 
   llvm::Value *val = nullptr;
@@ -959,13 +1016,14 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
             } else if (cell->type == ID($pmux)) {
               val = generatePmuxCellOutputValue(cell);
             } else {
-              log_error("Unsupported %s cell %s\n",
-                          cell->type.c_str(), cell->name.c_str());
+              log_error("Unsupported cell %s type %s\n",
+                          cell->name.c_str(), cell->type.c_str());
               val = generateInputValue(cell, ID::A);  // Fallback
             }
             break;
     default: 
-      log_warning("Totally weird cell %s\n", cell->type.c_str());
+      log_warning("Totally weird cell %s type %s\n",
+                          cell->name.c_str(), cell->type.c_str());
       val = generateInputValue(cell, ID::A);  // Fallback
       break;
   }
@@ -1417,27 +1475,24 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 }
 
 
-
-void
-LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
+// The main update function is created.  It is assumed that the llvm::Module already exists.
+// The LLVM is not written out.
+llvm::Function*
+LLVMWriter::writeMainFunction(RTLIL::Module *unrolledRtlMod,
                           std::string targetName,  // As specified in allowed_target.txt
                           bool targetIsVec,       // target is ASV vector
-                          std::string modName,  // from original Verilog, e.g. "M8080"
                           int num_cycles,
-                          std::string llvmFileName,
                           std::string funcName)
 {
 
+  log_assert(llvmMod);
 
+  clearFunctionData();
 
-  reset();
+  log("Generating main function\n");
 
-  log("Building DriverFinder\n");
   finder.build(unrolledRtlMod);
-  log("Built DriverFinder\n");
-  log("%ld objects\n", finder.size());
-
-  llvmMod = new llvm::Module("mod_;_"+modName+"_;_"+targetName, *c);
+  log("%ld objects in driverFinder\n", finder.size());
 
   // We  need a collection of all known input target vectors and their widths.
   // Get this by scanning input ports and looking at attributes that our
@@ -1466,7 +1521,7 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
 
     if (!targetPort) {
       log_error("Can't find output port %s for destination ASV %s\n", portName.c_str(), targetName.c_str());
-      return;
+      return nullptr;
     }
 
     int targetWidth;
@@ -1582,6 +1637,201 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   llvm::verifyFunction(*llvmFunc);
   llvm::verifyModule(*llvmMod);
 
+  return llvmFunc;
+}
+
+
+
+std::string
+LLVMWriter::getSubFunctionName(RTLIL::Module *submod,
+                               RTLIL::IdString returnPortName)
+{
+  return "func_;_" + internalToLLVM(submod->name) + "_$" + internalToLLVM(returnPortName);
+}
+
+
+
+// Generate a function declaration whose parameters are the module's input
+// ports, and whose return value is the given output port.  The top-level
+// ASVs, etc. are irrelevant.
+llvm::Function*
+LLVMWriter::generateSubFunctionDecl(RTLIL::Module *submod,
+                                    RTLIL::Wire *returnPort)
+{
+  std::string funcName = getSubFunctionName(submod, returnPort->name);
+
+  std::vector<llvm::Type *> argTypes;
+
+  // Add every module input port. The caller will expect the function args
+  // to be ordered this way - it will not match them by name.
+  for (RTLIL::IdString portname : submod->ports) {
+    RTLIL::Wire *port = submod->wire(portname);
+    log_assert(port);
+    if (port->port_input) {
+      argTypes.push_back(getLlvmType(port));
+    }
+  }
+
+  log_assert (returnPort->port_output && !returnPort->port_input);
+
+  // A return type of the correct width
+  llvm::Type* retTy = llvmWidth(returnPort->width);
+
+  llvm::FunctionType *functype =
+    llvm::FunctionType::get(retTy, argTypes, false);
+
+  // Create the actual function object
+  llvm::Function::LinkageTypes linkage = llvm::Function::InternalLinkage;
+
+  llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod);
+
+  // Set the function's args' names, and add them to the valueCache.  
+  unsigned n = 0;
+  for (RTLIL::IdString portname : submod->ports) {
+    RTLIL::Wire *port = submod->wire(portname);
+    if (port->port_input) {
+      llvm::Argument *arg = func->getArg(n);
+      arg->setName(internalToLLVM(portname));
+      n++;
+    }
+  }
+
+  return func;
+}
+
+
+// Write a sub-function, which calculates one output port of a child RTL module.
+// The child module is not unrolled, and needs to be purely combinatorial.
+
+llvm::Function*
+LLVMWriter::writeSubFunction(RTLIL::Module *submod,
+                             RTLIL::IdString returnPortName)
+{
+
+  clearFunctionData();  // Resets function-specific stuff, but does not touch llvmMod
+
+  log("Generating sub function for module %s port %s\n",
+      submod->name.c_str(), returnPortName.c_str());
+
+  finder.build(submod);
+  log("%ld objects in driverFinder\n", finder.size());
+
+  RTLIL::Wire *returnPort = submod->wire(returnPortName);
+  llvmFunc = generateSubFunctionDecl(submod, returnPort);
+  log_assert(llvmFunc);
+
+  // basic block
+  std::string bbName = "bb_;_" + internalToLLVM(submod->name) + "_$" +
+                        internalToLLVM(returnPortName);
+  llvm::BasicBlock *BB = llvm::BasicBlock::Create(*c, bbName, llvmFunc);
+  b->SetInsertPoint(BB);
+
+
+  log("Return value SigSpec: ");
+  my_log_wire(returnPort);
+  log_assert(returnPort->port_output);
+
+  // Collect the drivers of each bit of the return port
+  DriverSpec dSpec;
+  finder.buildDriverOf(returnPort, dSpec);
+
+  log_debug_driverspec(dSpec);
+  log_debug("\n");
+
+  // Generate the actual code
+  llvm::Value *returnValue = generateValue(dSpec);
+
+  b->CreateRet(returnValue);
+
+
+
+  log("%lu Values in valueCache\n", valueCache.size());
+  log("%lu hits, %lu misses\n", valueCache.nHits(), valueCache.nMisses());
+  log("%u LLVM instructions generated\n", llvmMod->getInstructionCount());
+
+  llvm::verifyFunction(*llvmFunc);
+
+  return llvmFunc;
+}
+
+bool
+LLVMWriter::isProperSubModule(RTLIL::Module *mod)
+{
+  // If the module is one of our magic ones for supporting vectors, skip it
+  return mod && mod->name[0] != '$' && !mod->get_bool_attribute(MEM_MOD_ATTR);
+}
+
+
+// Write a function of each output port of the given module.
+void
+LLVMWriter::writeSubFunctions(RTLIL::Module *submod)
+{
+
+  for (RTLIL::IdString portname : submod->ports) {
+    RTLIL::Wire *port = submod->wire(portname);
+    if (port->port_output) {
+      std::string subFuncName = getSubFunctionName(submod, portname);
+      // If a function by this name does not exist, create it.
+      if (!llvmMod->getFunction(subFuncName)) {
+        writeSubFunction(submod, portname);
+      }
+    }
+  }
+}
+
+
+
+// Recursively write functions for output ports of RTL sub-modules.
+void
+LLVMWriter::recurseSubFunctions(RTLIL::Module *mod)
+{
+
+  // Recursively write the sub functions in bottom-up order
+  for (auto cell : mod->cells()) {
+    RTLIL::Module *submod = design->module(cell->type);
+    if (isProperSubModule(submod)) {
+      recurseSubFunctions(submod);
+    }
+  }
+  writeSubFunctions(mod);
+}
+
+
+
+void
+LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
+                          std::string targetName,  // As specified in allowed_target.txt
+                          bool targetIsVec,       // target is ASV vector
+                          std::string modName,  // from original Verilog, e.g. "M8080"
+                          int num_cycles,
+                          std::string llvmFileName,
+                          std::string funcName)
+{
+
+  log_assert(!llvmMod);
+  llvmMod = new llvm::Module("mod_;_"+modName+"_;_"+targetName, *c);
+
+  clearFunctionData();
+
+  // Write functions for output ports of RTL sub-modules.
+
+  for (auto cell : unrolledRtlMod->cells()) {
+    RTLIL::Module *submod = design->module(cell->type);
+    if (isProperSubModule(submod)) {
+      recurseSubFunctions(submod);
+    }
+  }
+
+
+  writeMainFunction(unrolledRtlMod, targetName, targetIsVec, num_cycles, funcName);
+
+  log_assert(llvmFunc);
+
+
+  log("%u LLVM instructions generated\n", llvmMod->getInstructionCount());
+
+  llvm::verifyModule(*llvmMod);
+
   std::string Str;
   llvm::raw_string_ostream OS(Str);
   OS << *llvmMod;
@@ -1591,5 +1841,10 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   output << Str << std::endl;
   output.close();
 
-  reset();
+  clearFunctionData();
+
+  delete llvmMod;
+  llvmMod = nullptr;  
 }
+
+
