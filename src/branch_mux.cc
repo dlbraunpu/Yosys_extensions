@@ -89,7 +89,6 @@ void BranchMux::pruneFaninCone(std::set<llvm::Instruction*>& cone,
     for (auto it = cone.begin(); it != cone.end(); ) {
       llvm::Instruction *inst = *it;
       assert(inst->getParent() == bb);
-      std::string instDesc = instrToString(inst).c_str();
 
       // Check if there is any usage of this Instruction outside of
       // the cone and parentInst.
