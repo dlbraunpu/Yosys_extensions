@@ -26,6 +26,7 @@ public:
     bool simplify_and_or_gates = true;
     bool simplify_muxes = true;
     bool use_poison = false;
+    bool support_hierarchy = false;
   };
 
   LLVMWriter(Yosys::RTLIL::Design *des, const Options& options);

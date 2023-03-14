@@ -16,10 +16,11 @@ public:
     bool save_unrolled = false;
     bool optimize_unrolled = true;
     bool verbose_llvm_value_names = false;
-    bool cell_based_llvm_value_names = true;
+    bool cell_based_llvm_value_names = false;
     bool simplify_and_or_gates = true;
     bool simplify_muxes = true;
     bool use_poison = false;
+    bool support_hierarchy = false;
   };
 
   YosysUFGenerator(Yosys::RTLIL::Module *srcmod, const Options& opts);

@@ -75,9 +75,8 @@ struct FuncExtractCmd : public Pass {
     taintGen::g_path = ".";
     taintGen::g_verb = false;
 
-    bool write_llvm = true;
     bool read_rst = true;
-    bool force = false;
+    bool overwrite = false;
 
     YosysUFGenerator::Options ufGenOpts;
     ufGenOpts.save_unrolled = false;
@@ -87,14 +86,13 @@ struct FuncExtractCmd : public Pass {
     ufGenOpts.simplify_and_or_gates = true;
     ufGenOpts.simplify_muxes = true;
     ufGenOpts.use_poison = false;
+    ufGenOpts.support_hierarchy = false;
 
     size_t argidx;
     for (argidx = 1; argidx < args.size(); argidx++) {
       std::string arg = args[argidx];
       
-      if (arg == "-no_write_llvm") {
-        write_llvm = false;
-      } else if (arg == "-save_unrolled") {
+      if (arg == "-save_unrolled") {
         ufGenOpts.save_unrolled = true;
       } else if (arg == "-no_optimize_unrolled") {
         ufGenOpts.optimize_unrolled = false;
@@ -110,8 +108,10 @@ struct FuncExtractCmd : public Pass {
         ufGenOpts.cell_based_llvm_value_names = true;
       } else if (arg == "-no_rst") {
         read_rst = false;
-      } else if (arg == "-force") {
-        force = true;
+      } else if (arg == "-overwrite") {
+        overwrite = true;
+      } else if (arg == "-support_hierarchy") {
+        ufGenOpts.support_hierarchy = true;
       } else if (arg == "-path" && argidx < args.size()-1) {
         ++argidx;
         taintGen::g_path = args[argidx];
@@ -125,7 +125,7 @@ struct FuncExtractCmd : public Pass {
 
     // Override settings from config.txt
     if (ys_debug()) taintGen::g_verb = true;
-    if (force) funcExtract::g_overwrite_existing_llvm = true; 
+    if (overwrite) funcExtract::g_overwrite_existing_llvm = true; 
 
     // read instr.txt, result in g_instrInfo:
     // instruction encodings, write/read ASV, NOP

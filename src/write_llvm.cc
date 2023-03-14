@@ -36,6 +36,7 @@ namespace funcExtract {
 
 #include "util.h"
 #include "driver_tools.h"
+#include "branch_mux.h"
 
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"
@@ -673,6 +674,9 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   // Muxes apparently do not have SIGNED attributes.
 
   // Create or find the Values at the cell inputs
+
+  // It is vital to generate the S input first, so that the
+  // mux can later be optimized to if/else branching.
   llvm::Value *valS = generateInputValue(cell, ID::S);
   unsigned valWidthS = getWidth(valS);
   log_assert(valWidthS == 1);
@@ -977,8 +981,12 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
     RTLIL::Module *m = design->module(cell->type);
     if (m && m->get_bool_attribute(MEM_MOD_ATTR)) {
       return generateMagicCellOutputValue(cell, port);
-    } else {
+    } else if (opts.support_hierarchy) {
       return generateUserDefinedCellOutputValue(cell, port);
+    } else {
+      log_error("Unsupported hierarchical cell %s type %s\n",
+                  cell->name.c_str(), cell->type.c_str());
+      return llvmZero(outputSig.size());  // Dummy value  
     }
   }
 
@@ -1813,12 +1821,14 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
 
   clearFunctionData();
 
-  // Write functions for output ports of RTL sub-modules.
+  // If desired, write functions for output ports of RTL sub-modules.
 
-  for (auto cell : unrolledRtlMod->cells()) {
-    RTLIL::Module *submod = design->module(cell->type);
-    if (isProperSubModule(submod)) {
-      recurseSubFunctions(submod);
+  if (opts.support_hierarchy) {
+    for (auto cell : unrolledRtlMod->cells()) {
+      RTLIL::Module *submod = design->module(cell->type);
+      if (isProperSubModule(submod)) {
+        recurseSubFunctions(submod);
+      }
     }
   }
 
@@ -1831,6 +1841,10 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   log("%u LLVM instructions generated\n", llvmMod->getInstructionCount());
 
   llvm::verifyModule(*llvmMod);
+
+
+  BranchMux muxOptimizer(llvmFunc);
+  muxOptimizer.convertSelectsToBranches();
 
   std::string Str;
   llvm::raw_string_ostream OS(Str);
