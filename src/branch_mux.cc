@@ -81,21 +81,15 @@ void BranchMux::pruneFaninCone(std::set<llvm::Instruction*>& cone,
 {
   // Speed trick: Any Instruction belonging to a different BB cannot be in the fanin cone.
   const llvm::BasicBlock *bb = parentInst->getParent();
-  printf("PruneFaninCone size %lu parent instr %s\n", cone.size(), instrToString(parentInst).c_str());
 
   // Repeated sweep over the cone, until nothing else can be expelled.
   // When an instruction is expelled from the cone, its fanin must also be expelled.
-  int n = 0;
   for (;;) {
-    printf("prune pass %d\n", n++);
     int ndeleted = 0;
     for (auto it = cone.begin(); it != cone.end(); ) {
       llvm::Instruction *inst = *it;
       assert(inst->getParent() == bb);
       std::string instDesc = instrToString(inst).c_str();
-
-      printf("Consider instr %s\ncomes before parent: %d\n",
-              instDesc.c_str(), inst->comesBefore(parentInst));
 
       // Check if there is any usage of this Instruction outside of
       // the cone and parentInst.
@@ -104,27 +98,21 @@ void BranchMux::pruneFaninCone(std::set<llvm::Instruction*>& cone,
         llvm::User *user = use.getUser();
         assert(llvm::isa<llvm::Instruction>(user));
         llvm::Instruction *userInst = llvm::cast<llvm::Instruction>(user);
-        printf("user instr %s comes before consider instr %s\n",
-               instrToString(userInst).c_str(), instDesc.c_str());;
         if (userInst->getParent() != bb ||
             (userInst != parentInst && !cone.count(userInst))) {
           // The current inst is used outside of the cone, so we will expel it.
-          printf("user instr ouside of cone!\n");
           deleteThis = true;
           break;
         }
       }
       if (deleteThis) {
-        printf("Expelling %s\n", instDesc.c_str());
         ndeleted++;
         it = cone.erase(it);  // Properly advance cone iterator
       } else {
-        printf("Keeping %s\n", instDesc.c_str());
         ++it;
       }
     }
 
-    printf("Deleted %d insts\n", ndeleted);
     if (ndeleted == 0)
       break;
   }
@@ -147,7 +135,7 @@ bool BranchMux::convertSelectToBranch(llvm::SelectInst* select)
   pruneFaninCone(trueFaninCone, select);
   pruneFaninCone(falseFaninCone, select);
 
-  printf("Final size: true fanin %lu  false fanin %lu\n", 
+  printf("  Pruned size: true fanin %lu  false fanin %lu\n", 
           trueFaninCone.size(), falseFaninCone.size());
 
   return true;
