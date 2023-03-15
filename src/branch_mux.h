@@ -22,14 +22,23 @@ public:
 
 
 private:
-  bool convertSelectToBranch(llvm::SelectInst* select);
-  void getFaninCone(llvm::Value* val,
-                          std::set<llvm::Instruction*>& faninCone);
-  void getFaninCone(llvm::Instruction* inst,
-                          std::set<llvm::Instruction*>& faninCone);
+  // A compare class that compares Instructions in the same BB by their ordering.
+  struct InstrLess {
+    bool operator()(llvm::Instruction* const & a,
+                    llvm::Instruction* const & b) const;
+  };
 
-  void pruneFaninCone(std::set<llvm::Instruction*>& faninCone,
-                                 const llvm::Instruction *parentInst);
+  // A set with the desired ordering.
+  typedef std::set<llvm::Instruction*, InstrLess> InstSet;
+
+  bool convertSelectToBranch(llvm::SelectInst* select, int labelNum);
+  void getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& faninCone);
+  void getFaninCone(llvm::Instruction* inst, InstSet& faninCone);
+
+  void pruneFaninCone(InstSet& faninCone, const llvm::Instruction *parentInst);
+
+  llvm::Instruction *firstInstr(const InstSet& set);
+  llvm::Instruction *lastInstr(const InstSet& set);
 
 
   std::unique_ptr<llvm::LLVMContext> c;
