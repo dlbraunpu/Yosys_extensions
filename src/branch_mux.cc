@@ -77,7 +77,7 @@ void BranchMux::getFaninCone(llvm::Instruction* inst, InstSet& cone)
 
 
 // If the given Value is not an Instruction, or the instruction
-// dopes not belong to the given bb, this does nothing.
+// does not belong to the given bb, this does nothing.
 void BranchMux::getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& cone)
 {
   if (val && llvm::isa<llvm::Instruction>(val)) {
@@ -90,30 +90,40 @@ void BranchMux::getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& co
 
 
 // Expel from the given fanin cone any instruction that is also
-// used outside the cone and parentInst. (Presumably the root instruction
-// of the cone itself is an operand of parentInst.)
-void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Instruction *parentInst)
+// used outside the cone and the given Use. (Presumably the root instruction
+// of the cone itself is the source of the Use.)
+void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Use& allowedUse)
 {
-  // Speed trick: Any Instruction belonging to a different BB cannot be in the fanin cone.
-  const llvm::BasicBlock *bb = parentInst->getParent();
+  if (cone.empty())
+    return;
+
+  // Any Instruction belonging to a different BB cannot remain in the fanin cone.
+  // We make this requirement to simplify the subseqent process of moving the true/false cone
+  // to its own BB.
+  // This is acceptable because we process selects working backwards, so we will be less
+  // affected by hitting the BBs of a previously-processed select.
+  const llvm::BasicBlock *bb = firstInstr(cone)->getParent();
 
   // Repeatedly sweep over the cone, until nothing else can be expelled.
-  // When an instruction is expelled from the cone, its fanin must also be expelled.
+  // When an instruction is expelled from the cone, its fanin 
+  // will get expelled in subsequent sweeps.
   for (;;) {
     int ndeleted = 0;
     for (auto it = cone.begin(); it != cone.end(); ) {
       llvm::Instruction *inst = *it;
       assert(inst->getParent() == bb);
 
-      // Check if there is any usage of this Instruction outside of
-      // the cone and parentInst.
+      // Check if there is any usage of this Instruction outside of the cone
+      // (except for allowedUse, which is presumably one of the select's operands).
       bool deleteThis = false;
       for (const llvm::Use& use : inst->uses()) {
         llvm::User *user = use.getUser();
         assert(llvm::isa<llvm::Instruction>(user));
         llvm::Instruction *userInst = llvm::cast<llvm::Instruction>(user);
         if (userInst->getParent() != bb ||
-            (userInst != parentInst && !cone.count(userInst))) {
+            ((use.getUser() != allowedUse.getUser() ||
+              use.getOperandNo() != allowedUse.getOperandNo())
+             && !cone.count(userInst))) {
           // The current inst is used outside of the cone, so we will expel it.
           deleteThis = true;
           break;
@@ -133,29 +143,19 @@ void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Instruction *parentIns
 }
 
 
-// This only works if all the instrucitons in teh set belong to the same BB.
+// This depends on the way we have ordered InstSet
 llvm::Instruction *BranchMux::firstInstr(const InstSet& set)
 {
-  llvm::Instruction *first = *(set.begin());
-  for (llvm::Instruction *inst : set) {
-    if (inst->comesBefore(first)) {
-      first = inst;
-    }
-  }
-  return first;
+  if (set.empty()) return nullptr;
+  return *(set.begin());
 }
 
 
-// This only works if all the instrucitons in teh set belong to the same BB.
+// This depends on the way we have ordered InstSet
 llvm::Instruction *BranchMux::lastInstr(const InstSet& set)
 {
-  llvm::Instruction *last = *(set.begin());
-  for (llvm::Instruction *inst : set) {
-    if (last->comesBefore(inst)) {
-      last = inst;
-    }
-  }
-  return last;
+  if (set.empty()) return nullptr;
+  return *(set.rbegin());
 }
 
 
@@ -171,19 +171,22 @@ bool BranchMux::convertSelectToBranch(llvm::SelectInst* select, int labelNum)
   InstSet falseFaninCone;
   getFaninCone(bb, select->getFalseValue(), falseFaninCone);
 
-  printf("Select %s: true fanin %lu  false fanin %lu\n", instrToString(select).c_str(), 
-          trueFaninCone.size(), falseFaninCone.size());
+  pruneFaninCone(trueFaninCone, select->getOperandUse(1));
+  pruneFaninCone(falseFaninCone, select->getOperandUse(2));
 
-  pruneFaninCone(trueFaninCone, select);
-  pruneFaninCone(falseFaninCone, select);
-
-  printf("  Pruned size: true fanin %lu  false fanin %lu\n", 
-          trueFaninCone.size(), falseFaninCone.size());
-
-  // Don't bother creating branches around a single instruction...
-  if (trueFaninCone.size() < 2 && falseFaninCone.size() < 2) {
+  // Don't bother creating branches around a small number of instructions...
+  // TODO: Make a tuneable parameter.
+  if (trueFaninCone.size() + falseFaninCone.size() < 10) {
     return false;
   }
+
+  //printf("Processing select %d: %s: \ntrue fanin %lu  false fanin %lu\n",
+          //labelNum, instrToString(select).c_str(), 
+          //trueFaninCone.size(), falseFaninCone.size());
+
+  printf("Processing select %d: true fanin %lu  false fanin %lu\n",
+          labelNum, trueFaninCone.size(), falseFaninCone.size());
+
 
   // We make no assumptions about the ordering of the inputs to the select
 
@@ -258,20 +261,21 @@ bool BranchMux::convertSelectsToBranches()
   }
 
   // Convert them, starting from the end of the function and working backwards.
-  // TODO: Is there really any benefit to doing them in this order?
+  // The backwards order is vital.
   int n = 1;
   for (llvm::SelectInst *select : selects) {
     if (convertSelectToBranch(select, n)) {
       n++;
-      fflush(stdout);
-      if (llvm::verifyFunction(*func, &llvm::outs())) {
-        llvm::outs().flush();
-        printf("\nVerification failed!\n");
-        break;
-      }
     }
   }
 
+  // This is too slow to do after every conversion
+  fflush(stdout);
+  if (llvm::verifyFunction(*func, &llvm::outs())) {
+    llvm::outs().flush();
+    printf("\nVerification %d failed!\n", n);
+    return false;
+  }
 
   return true;
 }

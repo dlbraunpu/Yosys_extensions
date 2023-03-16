@@ -35,7 +35,7 @@ private:
   void getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& faninCone);
   void getFaninCone(llvm::Instruction* inst, InstSet& faninCone);
 
-  void pruneFaninCone(InstSet& faninCone, const llvm::Instruction *parentInst);
+  void pruneFaninCone(InstSet& faninCone, const llvm::Use& allowedUse);
 
   llvm::Instruction *firstInstr(const InstSet& set);
   llvm::Instruction *lastInstr(const InstSet& set);

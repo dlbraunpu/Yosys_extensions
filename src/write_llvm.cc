@@ -676,7 +676,9 @@ LLVMWriter::generateMuxCellOutputValue(RTLIL::Cell *cell)
   // Create or find the Values at the cell inputs
 
   // It is vital to generate the S input first, so that the
-  // mux can later be optimized to if/else branching.
+  // mux can later be optimized to if/else branching.  We don't want
+  // select value to depend on an instruction that is part of the A
+  // or B calculation.
   llvm::Value *valS = generateInputValue(cell, ID::S);
   unsigned valWidthS = getWidth(valS);
   log_assert(valWidthS == 1);
