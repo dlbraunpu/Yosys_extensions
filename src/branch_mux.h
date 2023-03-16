@@ -32,18 +32,19 @@ private:
   typedef std::set<llvm::Instruction*, InstrLess> InstSet;
 
   bool convertSelectToBranch(llvm::SelectInst* select, int labelNum);
-  void getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& faninCone);
-  void getFaninCone(llvm::Instruction* inst, InstSet& faninCone);
+  void getFaninCone(const llvm::Use& root, InstSet& faninCone);
+  void getFaninConeRecur(llvm::Instruction* inst,
+                         const llvm::Instruction *rootInst, InstSet& faninCone);
 
-  void pruneFaninCone(InstSet& faninCone, const llvm::Use& allowedUse);
+  void pruneFaninCone(InstSet& faninCone, const llvm::Use& root);
 
   llvm::Instruction *firstInstr(const InstSet& set);
   llvm::Instruction *lastInstr(const InstSet& set);
 
 
-  std::unique_ptr<llvm::LLVMContext> c;
-  std::unique_ptr<llvm::IRBuilder<>> b;
-  llvm::Module *mod;
+  //std::unique_ptr<llvm::LLVMContext> c;
+  //std::unique_ptr<llvm::IRBuilder<>> b;
+  //llvm::Module *mod;
   llvm::Function *func;  // function being modified
 
 

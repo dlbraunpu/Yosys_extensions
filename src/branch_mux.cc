@@ -42,6 +42,15 @@ BranchMux::~BranchMux()
 }
 
 
+// Return the Instruction that is the User of the given Use.
+llvm::Instruction *getUserInst(const llvm::Use& use)
+{
+  llvm::User *user = use.getUser();
+  assert(llvm::isa<llvm::Instruction>(user));
+  return llvm::cast<llvm::Instruction>(user);
+}
+
+
 // A compare function that compares Instructions in the same BB by their ordering.
 bool BranchMux::InstrLess::operator()(llvm::Instruction* const& a,
                                       llvm::Instruction* const& b) const
@@ -58,32 +67,55 @@ bool BranchMux::InstrLess::operator()(llvm::Instruction* const& a,
 }
 
 
-// Build fanin cone for a given instruction (including the instruction
-// itself).  Stay within the same BasicBlock
-void BranchMux::getFaninCone(llvm::Instruction* inst, InstSet& cone)
+// Add to the given fanin cone starting at the given instruction. Root is the
+// startpoint of the cone: if the given instruction is used by any other
+// instruction downstream from rootInst, do not consider it.
+// Also stay within the same BasicBlock.
+void BranchMux::getFaninConeRecur(llvm::Instruction* inst,
+                             const llvm::Instruction* rootInst, InstSet& cone)
 {
+  if (cone.count(inst) != 0) {
+    return;  // Already seen this inst
+  }
+
+  const llvm::BasicBlock *bb = rootInst->getParent();
+
+  if (inst->getParent() != bb) {
+    return;  // inst in wrong BB.
+  }
+
+  assert(inst->comesBefore(rootInst));
+
+  // Look at every usage of this inst.  If it is used
+  // by anything that cannot be in the cone, we must reject it.
+  for (const llvm::Use& use : inst->uses()) {
+    llvm::Instruction *userInst = getUserInst(use);
+    if (userInst->getParent() != bb || rootInst->comesBefore(userInst)) {
+      return;  // The inst is used by something downstream of rootInst
+    }
+  }
+
   cone.insert(inst);
+
   for (const auto& faninUse : inst->operands()) {
     llvm::Value* faninVal = faninUse.get();
     if (faninVal && llvm::isa<llvm::Instruction>(faninVal)) {
       llvm::Instruction *faninInst = llvm::cast<llvm::Instruction>(faninVal);
-      if (cone.count(faninInst) == 0 &&
-          faninInst->getParent() == inst->getParent()) {  // In same BB
-        getFaninCone(faninInst, cone);   // Recurse depth-first
-      }
+      getFaninConeRecur(faninInst, rootInst, cone);   // Recurse depth-first
     }
   }
 }
 
 
-// If the given Value is not an Instruction, or the instruction
-// does not belong to the given bb, this does nothing.
-void BranchMux::getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& cone)
+// If the given Use's Value is not an Instruction, this does nothing.
+void BranchMux::getFaninCone(const llvm::Use& root, InstSet& cone)
 {
+  llvm::Value *val = root.get(); // What is being used: An Instruction or a constant
+
   if (val && llvm::isa<llvm::Instruction>(val)) {
-    if (llvm::cast<llvm::Instruction>(val)->getParent() == bb) {
-      getFaninCone(llvm::cast<llvm::Instruction>(val), cone);
-    }
+    llvm::Instruction *inst = llvm::cast<llvm::Instruction>(val);
+    llvm::Instruction *rootInst = getUserInst(root);
+    getFaninConeRecur(inst, rootInst, cone);
   }
 }
 
@@ -92,7 +124,7 @@ void BranchMux::getFaninCone(llvm::BasicBlock *bb, llvm::Value* val, InstSet& co
 // Expel from the given fanin cone any instruction that is also
 // used outside the cone and the given Use. (Presumably the root instruction
 // of the cone itself is the source of the Use.)
-void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Use& allowedUse)
+void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Use& root)
 {
   if (cone.empty())
     return;
@@ -102,27 +134,70 @@ void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Use& allowedUse)
   // to its own BB.
   // This is acceptable because we process selects working backwards, so we will be less
   // affected by hitting the BBs of a previously-processed select.
-  const llvm::BasicBlock *bb = firstInstr(cone)->getParent();
+
+  llvm::Instruction *rootInst = getUserInst(root);
+  llvm::BasicBlock *bb = rootInst->getParent();
 
   // Repeatedly sweep over the cone, until nothing else can be expelled.
   // When an instruction is expelled from the cone, its fanin 
-  // will get expelled in subsequent sweeps.
+  // will eventually get expelled too.
+
+  /* Proposed code
+   * see https://stackoverflow.com/questions/1830158/how-to-call-erase-with-a-reverse-iterator
+  auto it=vt.end();
+  while (it>vt.begin())
+  {
+    it--;
+    if (*it == pCursor) //{ delete *it;
+      it = vt.erase(it); //}
+  }
+  */
+
+  int nsweeps = 0;
   for (;;) {
+    ++nsweeps;
     int ndeleted = 0;
+
+#if 1
+    auto it = cone.end();
+    while (it != cone.begin()) {
+      it--;
+
+      llvm::Instruction *inst = *it;
+      assert(inst->getParent() == bb);
+
+      // Check if there is any usage of this Instruction outside of the cone
+      // (except for root, which is presumably one of the select's operands).
+      bool deleteThis = false;
+      for (const llvm::Use& use : inst->uses()) {
+        llvm::Instruction *userInst = getUserInst(use);
+        if (userInst->getParent() != bb ||
+            ((use.getUser() != root.getUser() ||
+              use.getOperandNo() != root.getOperandNo())
+             && !cone.count(userInst))) {
+          // The current inst is used outside of the cone, so we will expel it.
+          deleteThis = true;
+          break;
+        }
+      }
+      if (deleteThis) {
+        ndeleted++;
+        it = cone.erase(it);  // Properly advance cone iterator
+      }
+    }
+#else
     for (auto it = cone.begin(); it != cone.end(); ) {
       llvm::Instruction *inst = *it;
       assert(inst->getParent() == bb);
 
       // Check if there is any usage of this Instruction outside of the cone
-      // (except for allowedUse, which is presumably one of the select's operands).
+      // (except for root, which is presumably one of the select's operands).
       bool deleteThis = false;
       for (const llvm::Use& use : inst->uses()) {
-        llvm::User *user = use.getUser();
-        assert(llvm::isa<llvm::Instruction>(user));
-        llvm::Instruction *userInst = llvm::cast<llvm::Instruction>(user);
+        llvm::Instruction *userInst = getUserInst(use);
         if (userInst->getParent() != bb ||
-            ((use.getUser() != allowedUse.getUser() ||
-              use.getOperandNo() != allowedUse.getOperandNo())
+            ((use.getUser() != root.getUser() ||
+              use.getOperandNo() != root.getOperandNo())
              && !cone.count(userInst))) {
           // The current inst is used outside of the cone, so we will expel it.
           deleteThis = true;
@@ -136,10 +211,11 @@ void BranchMux::pruneFaninCone(InstSet& cone, const llvm::Use& allowedUse)
         ++it;
       }
     }
-
+#endif
     if (ndeleted == 0)
       break;
   }
+  printf("prune %d sweeps\n", nsweeps);
 }
 
 
@@ -162,14 +238,19 @@ llvm::Instruction *BranchMux::lastInstr(const InstSet& set)
 
 bool BranchMux::convertSelectToBranch(llvm::SelectInst* select, int labelNum)
 {
+  //printf("Considering select %s: \n", instrToString(select).c_str());
+
   // Start with the BB containing the select
   llvm::BasicBlock *bb = select->getParent();
 
   InstSet trueFaninCone;
-  getFaninCone(bb, select->getTrueValue(), trueFaninCone);
+  getFaninCone(select->getOperandUse(1), trueFaninCone);
+  size_t trueSize = trueFaninCone.size();
 
   InstSet falseFaninCone;
-  getFaninCone(bb, select->getFalseValue(), falseFaninCone);
+  getFaninCone(select->getOperandUse(2), falseFaninCone);
+  size_t falseSize = falseFaninCone.size();
+
 
   pruneFaninCone(trueFaninCone, select->getOperandUse(1));
   pruneFaninCone(falseFaninCone, select->getOperandUse(2));
@@ -180,12 +261,8 @@ bool BranchMux::convertSelectToBranch(llvm::SelectInst* select, int labelNum)
     return false;
   }
 
-  //printf("Processing select %d: %s: \ntrue fanin %lu  false fanin %lu\n",
-          //labelNum, instrToString(select).c_str(), 
-          //trueFaninCone.size(), falseFaninCone.size());
-
-  printf("Processing select %d: true fanin %lu  false fanin %lu\n",
-          labelNum, trueFaninCone.size(), falseFaninCone.size());
+  printf("Processing select %d: true fanin %lu/%lu  false fanin %lu/%lu\n",
+          labelNum, trueSize, trueFaninCone.size(), falseSize, falseFaninCone.size());
 
 
   // We make no assumptions about the ordering of the inputs to the select
@@ -267,6 +344,7 @@ bool BranchMux::convertSelectsToBranches()
     if (convertSelectToBranch(select, n)) {
       n++;
     }
+    fflush(stdout);
   }
 
   // This is too slow to do after every conversion
