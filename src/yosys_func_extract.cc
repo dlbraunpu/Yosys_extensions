@@ -87,6 +87,8 @@ struct FuncExtractCmd : public Pass {
     ufGenOpts.simplify_muxes = true;
     ufGenOpts.use_poison = false;
     ufGenOpts.support_hierarchy = false;
+    ufGenOpts.optimize_muxes = false;
+    ufGenOpts.optimize_mux_threshold = -1;
 
     size_t argidx;
     for (argidx = 1; argidx < args.size(); argidx++) {
@@ -102,6 +104,8 @@ struct FuncExtractCmd : public Pass {
         ufGenOpts.simplify_and_or_gates = false;
       } else if (arg == "-no_simplify_muxes") {
         ufGenOpts.simplify_muxes = false;
+      } else if (arg == "-optimize_muxes") {
+        ufGenOpts.optimize_muxes = true;
       } else if (arg == "-verbose_names") {
         ufGenOpts.verbose_llvm_value_names = true;
       } else if (arg == "-cell_based_names") {
@@ -115,6 +119,9 @@ struct FuncExtractCmd : public Pass {
       } else if (arg == "-path" && argidx < args.size()-1) {
         ++argidx;
         taintGen::g_path = args[argidx];
+      } else if (arg == "-optimize_mux_threshold" && argidx < args.size()-1) {
+        ++argidx;
+        ufGenOpts.optimize_mux_threshold = std::stoi(args[argidx]);
       } else {
         break;
       }

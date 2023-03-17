@@ -503,6 +503,8 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   llvmOpts.simplify_muxes = m_opts.simplify_muxes;
   llvmOpts.use_poison = m_opts.use_poison;
   llvmOpts.support_hierarchy = m_opts.support_hierarchy;
+  llvmOpts.optimize_muxes = m_opts.optimize_muxes;
+  llvmOpts.optimize_mux_threshold = m_opts.optimize_mux_threshold;
 
 
   LLVMWriter writer(m_des, llvmOpts);

@@ -24,7 +24,22 @@
 #include <list>
 
 
-static std::string instrToString(const llvm::Instruction* inst)
+namespace BranchMux {
+
+
+// A compare class that compares Instructions in the same BB by their ordering.
+struct InstrLess {
+  bool operator()(llvm::Instruction* const & a,
+                  llvm::Instruction* const & b) const;
+};
+
+// A set with arbitrary ordering.
+typedef std::set<llvm::Instruction*> InstSet;
+
+// An ordered list that we can efficiently add and remove elements from.
+typedef std::list<llvm::Instruction*> InstList;
+
+std::string instrToString(const llvm::Instruction* inst)
 {
   std::string str;
   llvm::raw_string_ostream ss(str);
@@ -33,13 +48,6 @@ static std::string instrToString(const llvm::Instruction* inst)
   return str;
 }
 
-BranchMux::BranchMux(llvm::Function *f) : func(f) 
-{
-}
-
-BranchMux::~BranchMux()
-{
-}
 
 
 // Return the Instruction that is the User of the given Use.
@@ -54,8 +62,8 @@ llvm::Instruction *getUserInst(const llvm::Use& use)
 // A compare function that compares Instructions in the same BB by their ordering.
 // This lets us sort an Instruction list backwards, so that the first Instruction in the list
 // is last in the BB.
-bool BranchMux::InstrLess::operator()(llvm::Instruction* const& a,
-                                      llvm::Instruction* const& b) const
+bool InstrLess::operator()(llvm::Instruction* const& a,
+                           llvm::Instruction* const& b) const
 {
   if (a == b) return false;
 
@@ -73,7 +81,7 @@ bool BranchMux::InstrLess::operator()(llvm::Instruction* const& a,
 // startpoint of the cone: if the given instruction is used by any other
 // instruction downstream from rootInst, do not consider it.
 // Also stay within the same BasicBlock.
-void BranchMux::getFaninConeRecur(llvm::Instruction* inst,
+void getFaninConeRecur(llvm::Instruction* inst,
                              const llvm::Instruction* rootInst, InstSet& cone)
 {
   if (cone.count(inst) != 0) {
@@ -110,7 +118,7 @@ void BranchMux::getFaninConeRecur(llvm::Instruction* inst,
 
 
 // If the given Use's Value is not an Instruction, this does nothing.
-void BranchMux::getFaninCone(const llvm::Use& root, InstSet& cone)
+void getFaninCone(const llvm::Use& root, InstSet& cone)
 {
   llvm::Value *val = root.get(); // What is being used: An Instruction or a constant
 
@@ -128,7 +136,7 @@ void BranchMux::getFaninCone(const llvm::Use& root, InstSet& cone)
 // of the cone itself is the source of the Use.)  Also copy the remaining members
 // of the cone to coneList, sorted in the proper order.  Upon returning,
 // coneList and coneSet will have the same pruned contents.
-void BranchMux::pruneFaninCone(InstSet& coneSet, InstList& coneList, const llvm::Use& root)
+void pruneFaninCone(InstSet& coneSet, InstList& coneList, const llvm::Use& root)
 {
   coneList.clear();
 
@@ -211,9 +219,9 @@ void BranchMux::pruneFaninCone(InstSet& coneSet, InstList& coneList, const llvm:
 
 
 
-bool BranchMux::convertSelectToBranch(llvm::SelectInst* select, int labelNum)
+bool convertSelectToBranch(llvm::SelectInst* select, int labelNum, int minSize)
 {
-  const int minSize = 10; // TODO: Make tuneable
+  if (minSize < 0) minSize = 10; // Default value
 
   //printf("Considering select %s: \n", instrToString(select).c_str());
 
@@ -308,7 +316,7 @@ bool BranchMux::convertSelectToBranch(llvm::SelectInst* select, int labelNum)
 
 
 
-bool BranchMux::convertSelectsToBranches()
+bool convertSelectsToBranches(llvm::Function *func, int threshold)
 {
   std::list<llvm::SelectInst*> selects;
   
@@ -328,7 +336,7 @@ bool BranchMux::convertSelectsToBranches()
   // The backwards order is vital.
   int n = 1;
   for (llvm::SelectInst *select : selects) {
-    if (convertSelectToBranch(select, n)) {
+    if (convertSelectToBranch(select, n, threshold)) {
       n++;
     }
     fflush(stdout);
@@ -344,3 +352,18 @@ bool BranchMux::convertSelectsToBranches()
 
   return true;
 }
+
+
+int convertSelectsToBranches(llvm::Module *mod, int threshold)
+{
+  int ret = 0;
+
+  for (llvm::Function& func : (*mod)) {
+    ret += convertSelectsToBranches(&func, threshold);
+  }
+
+  return ret;
+}
+
+
+};

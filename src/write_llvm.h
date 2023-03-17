@@ -27,6 +27,8 @@ public:
     bool simplify_muxes = true;
     bool use_poison = false;
     bool support_hierarchy = false;
+    bool optimize_muxes = false;
+    int optimize_mux_threshold = -1;
   };
 
   LLVMWriter(Yosys::RTLIL::Design *des, const Options& options);

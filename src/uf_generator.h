@@ -21,6 +21,8 @@ public:
     bool simplify_muxes = true;
     bool use_poison = false;
     bool support_hierarchy = false;
+    bool optimize_muxes = false;
+    int optimize_mux_threshold = -1;
   };
 
   YosysUFGenerator(Yosys::RTLIL::Module *srcmod, const Options& opts);

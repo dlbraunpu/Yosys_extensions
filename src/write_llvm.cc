@@ -1845,8 +1845,10 @@ LLVMWriter::write_llvm_ir(RTLIL::Module *unrolledRtlMod,
   llvm::verifyModule(*llvmMod);
 
 
-  BranchMux muxOptimizer(llvmFunc);
-  muxOptimizer.convertSelectsToBranches();
+  if (opts.optimize_muxes) {
+    log("Optimizing muxes...\n");
+    BranchMux::convertSelectsToBranches(llvmMod, opts.optimize_mux_threshold);
+  }
 
   std::string Str;
   llvm::raw_string_ostream OS(Str);
