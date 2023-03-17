@@ -28,15 +28,18 @@ private:
                     llvm::Instruction* const & b) const;
   };
 
-  // A set with the desired ordering.
-  typedef std::set<llvm::Instruction*, InstrLess> InstSet;
+  // A set with arbitrary ordering.
+  typedef std::set<llvm::Instruction*> InstSet;
+
+  // An ordered list that we can efficiently add and remove elements from.
+  typedef std::list<llvm::Instruction*> InstList;
 
   bool convertSelectToBranch(llvm::SelectInst* select, int labelNum);
   void getFaninCone(const llvm::Use& root, InstSet& faninCone);
   void getFaninConeRecur(llvm::Instruction* inst,
                          const llvm::Instruction *rootInst, InstSet& faninCone);
 
-  void pruneFaninCone(InstSet& faninCone, const llvm::Use& root);
+  void pruneFaninCone(InstSet& coneSet, InstList& coneList, const llvm::Use& root);
 
   llvm::Instruction *firstInstr(const InstSet& set);
   llvm::Instruction *lastInstr(const InstSet& set);
