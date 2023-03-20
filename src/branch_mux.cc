@@ -101,7 +101,7 @@ void getFaninConeRecur(llvm::Instruction* inst,
   for (const llvm::Use& use : inst->uses()) {
     llvm::Instruction *userInst = getUserInst(use);
     if (userInst->getParent() != bb || rootInst->comesBefore(userInst)) {
-      return;  // The inst is used by something downstream of rootInst
+      return;  // The inst is used by something in another bb, or downstream of rootInst
     }
   }
 
