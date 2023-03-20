@@ -104,8 +104,10 @@ struct FuncExtractCmd : public Pass {
         ufGenOpts.simplify_and_or_gates = false;
       } else if (arg == "-no_simplify_muxes") {
         ufGenOpts.simplify_muxes = false;
-      } else if (arg == "-optimize_muxes") {
+      } else if (arg == "-pre_opto_mux_to_branch") {
         ufGenOpts.optimize_muxes = true;
+      } else if (arg == "-post_opto_mux_to_branch") {
+        g_post_opto_mux_to_branch = true;
       } else if (arg == "-verbose_names") {
         ufGenOpts.verbose_llvm_value_names = true;
       } else if (arg == "-cell_based_names") {
@@ -119,9 +121,12 @@ struct FuncExtractCmd : public Pass {
       } else if (arg == "-path" && argidx < args.size()-1) {
         ++argidx;
         taintGen::g_path = args[argidx];
-      } else if (arg == "-optimize_mux_threshold" && argidx < args.size()-1) {
+      } else if (arg == "-pre_opto_mux_to_branch_threshold" && argidx < args.size()-1) {
         ++argidx;
         ufGenOpts.optimize_mux_threshold = std::stoi(args[argidx]);
+      } else if (arg == "-post_opto_mux_to_branch_threshold" && argidx < args.size()-1) {
+        ++argidx;
+        g_post_opto_mux_to_branch_threshold = std::stoi(args[argidx]);
       } else {
         break;
       }

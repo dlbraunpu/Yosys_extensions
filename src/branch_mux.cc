@@ -279,7 +279,7 @@ bool convertSelectToBranch(llvm::SelectInst* select, int labelNum, int minSize)
 
   // Add a new terminator branch instruction to the original BB that
   // jumps to either trueBB or falseBB based on the correct condition.
-  llvm::IRBuilder(bb).CreateCondBr(select->getCondition(), trueBB, falseBB);
+  llvm::IRBuilder<>(bb).CreateCondBr(select->getCondition(), trueBB, falseBB);
 
   // Move all the True cone instructions into the True BB, in their existing order.
   for (auto it = trueFaninList.rbegin(); it != trueFaninList.rend(); ++it) {
@@ -294,7 +294,7 @@ bool convertSelectToBranch(llvm::SelectInst* select, int labelNum, int minSize)
 
   // Stick a PHI instruction at the beginning of the postBB
   // (before the select instruction).
-  llvm::IRBuilder postBuilder(postBB);
+  llvm::IRBuilder<> postBuilder(postBB);
   postBuilder.SetInsertPoint(postBB, postBB->begin());
   llvm::PHINode *phiInst = postBuilder.CreatePHI(select->getType(), 2);
 
