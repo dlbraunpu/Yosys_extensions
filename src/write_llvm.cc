@@ -1,4 +1,6 @@
 #include "write_llvm.h"
+
+#include "func_extract/src/branch_mux.h"
   
 // LLVM headers (many more than needed)
 #include "llvm/ADT/APFloat.h"
@@ -36,7 +38,6 @@ namespace funcExtract {
 
 #include "util.h"
 #include "driver_tools.h"
-#include "branch_mux.h"
 
 
 USING_YOSYS_NAMESPACE  // Does "using namespace"

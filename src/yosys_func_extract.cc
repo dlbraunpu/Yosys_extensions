@@ -107,7 +107,7 @@ struct FuncExtractCmd : public Pass {
       } else if (arg == "-pre_opto_mux_to_branch") {
         ufGenOpts.optimize_muxes = true;
       } else if (arg == "-post_opto_mux_to_branch") {
-        g_post_opto_mux_to_branch = true;
+        funcExtract::g_post_opto_mux_to_branch = true;
       } else if (arg == "-verbose_names") {
         ufGenOpts.verbose_llvm_value_names = true;
       } else if (arg == "-cell_based_names") {
@@ -126,7 +126,7 @@ struct FuncExtractCmd : public Pass {
         ufGenOpts.optimize_mux_threshold = std::stoi(args[argidx]);
       } else if (arg == "-post_opto_mux_to_branch_threshold" && argidx < args.size()-1) {
         ++argidx;
-        g_post_opto_mux_to_branch_threshold = std::stoi(args[argidx]);
+        funcExtract::g_post_opto_mux_to_branch_threshold = std::stoi(args[argidx]);
       } else {
         break;
       }
