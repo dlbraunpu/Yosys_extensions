@@ -20,7 +20,13 @@ set(YOSYS_LIBS -lstdc++ -lm -lrt -lreadline -lffi -ldl -lz -ltcl8.6 -ltclstub8.6
 
 
 # Stuff required for LLVM
-find_package (LLVM 14 REQUIRED)
+
+# Look for existing LLVM installation
+#find_package (LLVM 14 REQUIRED)
+
+# Force use of Doug's LLVM build
+find_package (LLVM 14 REQUIRED PATHS /home/dlbraun/.local/ NO_DEFAULT_PATH)
+
 include_directories(${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 llvm_map_components_to_libnames(llvm_libs support core irreader)
@@ -46,7 +52,7 @@ aux_source_directory(./src SRC_DIR)
 
 set(CMAKE_BUILD_TYPE Debug)
 
-set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -Wall -g")
+set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -Og -Wall -g")
 
 
 
@@ -65,7 +71,7 @@ target_link_libraries(${PROJECT_NAME} ${llvm_libs})
 # Add tags target 
 set_source_files_properties(tags PROPERTIES GENERATED true)
 add_custom_target(tags
-    COMMAND ctags -R  --extra=+f .
+    COMMAND ctags -R --extra=+fq ${CMAKE_SOURCE_DIR}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 
