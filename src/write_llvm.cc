@@ -94,16 +94,31 @@ isAllOnes(llvm::Value *val)
 
 
 
-// Just remove the leading backslash, if any
+// Just remove the leading backslash, if any.
+// If oldStyle is true, we try to match what the original
+// version of func_extract would do, including keeping any
+// leading backslash.  This is needed for function arg names.
+
 static std::string
-internalToLLVM(RTLIL::IdString name)
+internalToLLVM(RTLIL::IdString name, bool oldStyle = false)
 {
-  const char *s = name.c_str();
-  log_assert(s[0] == '\\' || s[0] == '$');
-  if (s[0] == '\\') {
-    return s+1;
+  if (oldStyle) {
+    std::string str = internalToV(name);
+    // Remove any trailing spaces added by internalToV.
+    while (!str.empty() && str.back() == ' ') {
+      str.pop_back();
+    }
+    return str;
+
+  } else {
+
+    const char *s = name.c_str();
+    log_assert(s[0] == '\\' || s[0] == '$');
+    if (s[0] == '\\') {
+      return s+1;
+    }
+    return s;
   }
-  return s;
 }
 
 
@@ -1220,7 +1235,7 @@ llvm::Value *
 LLVMWriter::generatePrimaryInputValue(RTLIL::Wire *port)
 {
   assert (port->port_input);
-  std::string argname = internalToLLVM(port->name);
+  std::string argname = internalToLLVM(port->name, true);  // Take care to match the old func_extract behavior
   llvm::Value *val = nullptr;
 
   if (!port->has_attribute(TARGET_VECTOR_ATTR)) {
@@ -1462,7 +1477,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
     // Skip ASVs in register arrays.
     if (port->port_input && !port->has_attribute(TARGET_VECTOR_ATTR)) {
       llvm::Argument *arg = func->getArg(n);
-      arg->setName(internalToLLVM(portname));
+      arg->setName(internalToLLVM(portname, true));  // Take care to match the old func_extract behavior
       n++;
     }
   }
@@ -1702,7 +1717,7 @@ LLVMWriter::generateSubFunctionDecl(RTLIL::Module *submod,
     RTLIL::Wire *port = submod->wire(portname);
     if (port->port_input) {
       llvm::Argument *arg = func->getArg(n);
-      arg->setName(internalToLLVM(portname));
+      arg->setName(internalToLLVM(portname, true));  // Take care to match the old func_extract behavior
       n++;
     }
   }

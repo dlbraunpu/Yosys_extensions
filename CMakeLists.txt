@@ -59,6 +59,9 @@ set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -Og -Wall -g")
 # The shared library that will contain the Yosys extension we are making
 add_library(${PROJECT_NAME} SHARED ${SRC_DIR})
 
+# A statically linked version
+#add_library(${PROJECT_NAME} ${SRC_DIR})
+
 target_link_libraries(${PROJECT_NAME} ${Z3_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${YOSYS_LIBS})
 target_link_libraries(${PROJECT_NAME} glog::glog)
