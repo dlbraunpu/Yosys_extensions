@@ -51,6 +51,7 @@ LLVMWriter::LLVMWriter(RTLIL::Design *des, const Options &options)
   b = std::make_unique<llvm::IRBuilder<>>(*c);
   llvmMod = nullptr;  // Deleting the Context deletes this.
   llvmFunc = nullptr; // And this.
+  pmuxIdx = 0;
 }
 
 LLVMWriter::~LLVMWriter()
@@ -138,6 +139,7 @@ LLVMWriter::llvmVectorType(unsigned elemwidth, unsigned nelems) {
 llvm::ConstantInt *
 LLVMWriter::llvmInt(uint64_t val, unsigned width)
 {
+  log_assert(width <= 64);
   return llvm::ConstantInt::get(llvmWidth(width), val, false);
 }
 
@@ -209,6 +211,12 @@ LLVMWriter::getWidth(llvm::Type *ty)
 void
 LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
 {
+  // There is no point in putting non-instructions
+  // (e.g. constants or function args) in the cache.
+  if (!llvm::isa<llvm::Instruction>(value)) {
+    return;
+  }
+
   if (_dict.find(driver) != _dict.end()) {
     // Already there
     log_warning("Repeated calculation of Value for driverspec:\n");
@@ -402,6 +410,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   // Create or find the Value at the cell input
   llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
   unsigned valWidthA = getWidth(valA);
+  log_assert(valWidthA == cellWidthA);
 
   bool isReduce = isReductionCell(cell->type);
 
@@ -813,10 +822,23 @@ LLVMWriter::generateSimplifiedMuxCellOutputValue(RTLIL::Cell *cell)
 // Create a Value representing the output port of the given 3-input pmux cell.
 // This is a strange form of mux
 // TODO: Yosys optimization can try to get rid pf pmux cells (e.g. the pmuxtree
-// command), so we may rarely see them in practice.
+// command), so we can avoid having to deal with them.
 llvm::Value *
 LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 {
+  if (!opts.support_pmux) {
+    log_error("Unsupported pmux cell %s\n", cell->name.c_str());
+    log("A:\n%s\n", log_signal(cell->getPort(ID::A)));
+    log("B:\n%s\n", log_signal(cell->getPort(ID::B)));
+    log("S:\n%s\n", log_signal(cell->getPort(ID::S)));
+    log_flush();
+    llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
+    return valA;
+  }
+
+  ++pmuxIdx;
+
+
   log_debug("generatePmuxCellOutputValue(): cell port %s widths: A %d B %d S %d:\n",
        cell->name.c_str(),
        cell->getPort(ID::A).size(),
@@ -841,43 +863,85 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 
   // Muxes apparently do not have SIGNED attributes.
 
-  // Create or find the Values at the cell inputs
-  llvm::Value *valA = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-  unsigned valWidthA = getWidth(valA);
-
-  llvm::Value *valB = generateInputValue(cell, ID::B);  // Possibly lots of recursion here
-  unsigned valWidthB = getWidth(valB);
-
   llvm::Value *valS = generateInputValue(cell, ID::S);
   unsigned valWidthS = getWidth(valS);
 
   // Unique characteristic of pmux cells
   unsigned cellWidthB = cellWidthAY * cellWidthS;
 
-  // TODO: Handle width weirdness of $pmux cells!
-
   log_assert(sigWidthA == cellWidthAY);
   log_assert(sigWidthB == cellWidthB);
   log_assert(sigWidthY == cellWidthAY);
   log_assert(sigWidthS == cellWidthS);
 
-  log_assert(valWidthA == cellWidthAY);
-  log_assert(valWidthB == cellWidthB);
   log_assert(valWidthS == cellWidthS);
 
+  
+  // The driverSpec of input B is typically a concatenation of a bunch of things.
+  // For each output choice, we generate the correct slice of B.
+  DriverSpec bSpec;
+  finder.buildDriverOf(cell->getPort(ID::B), bSpec);
 
-  // TODO: If A or B widths are not what they should be, zero
-  // or sign-extend the input data.  Consider \SIGNED attributes
-  // BTW, SigSpecs do not have any information about signed-ness
-  // Possible approach: create a truncated or extended version of
-  // the input's DriverSpec, and generate (and cache) its value.
+  uint64_t caseMask = 1;
 
-  log_error("Unsupported pmux cell %s\n", cell->name.c_str());
-  log("A:\n%s\n", log_signal(cell->getPort(ID::A)));
-  log("B:\n%s\n", log_signal(cell->getPort(ID::B)));
-  log("S:\n%s\n", log_signal(cell->getPort(ID::S)));
-  log_flush();
-  return valA;
+  llvm::BasicBlock *originalBB = b->GetInsertBlock();
+
+  std::string bbBaseName = "switch" + std::to_string(pmuxIdx);
+
+  // Create a new BB for the default case
+  llvm::BasicBlock *defaultBB = llvm::BasicBlock::Create(*c, bbBaseName+"_default", llvmFunc);
+
+  // Another BB for the continuation past the switch cases
+  llvm::BasicBlock *postBB = llvm::BasicBlock::Create(*c, bbBaseName+"_post", llvmFunc);
+
+  // Make the switch instruction that will terminate the original BB.
+  b->SetInsertPoint(originalBB);
+  llvm::SwitchInst *switchInst = b->CreateSwitch(valS, defaultBB);
+
+  b->SetInsertPoint(defaultBB, defaultBB->begin());
+
+  // The default BB will have whatever is needed to generate the pmux A input
+  llvm::Value *defaultVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
+
+  // This branch instruction terminates defaultBB
+  b->CreateBr(postBB);
+
+  // We have to put a Phi instruction at the beginning of postBB,
+  // to gather the values of each case.
+  b->SetInsertPoint(postBB, postBB->begin());
+  llvm::PHINode *phiInst = b->CreatePHI(defaultVal->getType(), 9999);
+
+  phiInst->addIncoming(defaultVal, defaultBB);
+
+  for(unsigned offset = 0, caseIdx = 0; offset < cellWidthB; offset += cellWidthAY, caseIdx++) {
+
+    // Create a new BB for the this case
+    llvm::BasicBlock *caseBB = llvm::BasicBlock::Create(*c,
+                bbBaseName+"_case"+std::to_string(caseIdx), llvmFunc);
+    b->SetInsertPoint(caseBB, caseBB->begin());
+
+    // Create the instructions for this case
+    DriverSpec sliceSpec = bSpec.extract(offset, cellWidthAY) ;
+    llvm::Value *sliceVal = generateValue(sliceSpec);  // Possibly lots of recursion here
+
+    //  Update the Phi instruction at the beginning of postBB.
+    phiInst->addIncoming(sliceVal, caseBB);
+
+    // This branch instruction terminates this case BB
+    b->CreateBr(postBB);
+
+    // Create the ConstantInt that is the one-high bit mask for this case
+    llvm::ConstantInt *caseVal = llvmInt(caseMask, cellWidthS);
+    caseMask <<= 1;
+
+    switchInst->addCase(caseVal, caseBB);
+  }
+
+  // From now on, instructions go in the newly-created post BB,
+  // right after the Phi instrction we put in it.
+  b->SetInsertPoint(postBB);
+
+  return phiInst;
 }
 
 
@@ -1279,6 +1343,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     log_debug("generateValue for primary input port\n");
     log_debug_driverspec(dSpec);
 
+    // The generated Value could be either a function arg or a load instruction.
     llvm::Value *val = generatePrimaryInputValue(dSpec.as_wire());
     valueCache.add(val, dSpec);
     return val;

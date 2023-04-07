@@ -87,6 +87,7 @@ struct FuncExtractCmd : public Pass {
     ufGenOpts.simplify_muxes = true;
     ufGenOpts.use_poison = false;
     ufGenOpts.support_hierarchy = false;
+    ufGenOpts.support_pmux = false;
     ufGenOpts.optimize_muxes = false;
     ufGenOpts.optimize_mux_threshold = -1;
 
@@ -118,6 +119,8 @@ struct FuncExtractCmd : public Pass {
         overwrite = true;
       } else if (arg == "-support_hierarchy") {
         ufGenOpts.support_hierarchy = true;
+      } else if (arg == "-pmux") {
+        ufGenOpts.support_pmux = true;
       } else if (arg == "-path" && argidx < args.size()-1) {
         ++argidx;
         taintGen::g_path = args[argidx];

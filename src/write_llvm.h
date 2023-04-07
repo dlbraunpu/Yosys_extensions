@@ -27,6 +27,7 @@ public:
     bool simplify_muxes = true;
     bool use_poison = false;
     bool support_hierarchy = false;
+    bool support_pmux = false;
     bool optimize_muxes = false;
     int optimize_mux_threshold = -1;
   };
@@ -72,6 +73,8 @@ private:
   ValueCache valueCache;
   DriverFinder finder;
   Options opts;
+
+  int pmuxIdx;
 
 
   llvm::IntegerType *llvmWidth(unsigned a);

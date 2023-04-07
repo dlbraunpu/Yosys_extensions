@@ -330,13 +330,17 @@ YosysUFGenerator::makeUnrolledModule(RTLIL::IdString unrolledModName, RTLIL::Mod
   Pass::call_on_module(design, unrolledMod, "stat");
   log_pop();
 
-  // Generating code for pmux cells is complicated, so have Yosys
-  // replace them with regular muxes.
-  log("Removing $pmux cells...\n");
-  log_push();
-  Pass::call_on_module(design, unrolledMod, "pmuxtree");
-  Pass::call_on_module(design, unrolledMod, "stat");
-  log_pop();
+  if (m_opts.support_pmux) {
+    log("Translating pmux cells to LLVM switches\n");
+  } else {
+    // Generating code for pmux cells is complicated, so have Yosys
+    // replace them with regular muxes.
+    log("Removing $pmux cells...\n");
+    log_push();
+    Pass::call_on_module(design, unrolledMod, "pmuxtree");
+    Pass::call_on_module(design, unrolledMod, "stat");
+    log_pop();
+  }
 
 
   // Doing opto here gives little improvement
@@ -503,6 +507,7 @@ YosysUFGenerator::print_llvm_ir(funcExtract::DestInfo &destInfo,
   llvmOpts.simplify_muxes = m_opts.simplify_muxes;
   llvmOpts.use_poison = m_opts.use_poison;
   llvmOpts.support_hierarchy = m_opts.support_hierarchy;
+  llvmOpts.support_pmux = m_opts.support_pmux;
   llvmOpts.optimize_muxes = m_opts.optimize_muxes;
   llvmOpts.optimize_mux_threshold = m_opts.optimize_mux_threshold;
 
