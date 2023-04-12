@@ -209,40 +209,92 @@ LLVMWriter::getWidth(llvm::Type *ty)
 
 
 void
-LLVMWriter::ValueCache::add(llvm::Value *value, const DriverSpec& driver)
+LLVMWriter::ValueCache::add(const DriverSpec& driver, llvm::Value *value)
 {
   // There is no point in putting non-instructions
   // (e.g. constants or function args) in the cache.
-  if (!llvm::isa<llvm::Instruction>(value)) {
+  llvm::Instruction *instr = llvm::dyn_cast<llvm::Instruction>(value);
+  if (!instr) {
     return;
   }
 
-  if (_dict.find(driver) != _dict.end()) {
-    // Already there
-    log_warning("Repeated calculation of Value for driverspec:\n");
-    log_driverspec(driver);
-    log("existing Value %p:\n", _dict[driver]);
-    _dict[driver]->dump();
-    log("new Value %p:\n", value);
-    value->dump();
-    log_flush();
-    return;
+  // Grab the Function from the first Instruction we add.
+  if (!_func) {
+    _func = instr->getFunction();
+  } else {
+    log_assert(instr->getFunction() == _func);
   }
 
-  _dict[driver] = value;
+  // See if we already have an entry for the given driver, in the same BB
+  // equal_range() returns a pair of iterators
+  auto range = _mmap.equal_range(driver);
+
+  for (auto pos = range.first; pos != range.second; ++pos) {
+    llvm::Instruction *entry =  llvm::dyn_cast<llvm::Instruction>(pos->second);
+    log_assert(entry);
+
+    if (entry->getParent() == instr->getParent()) {
+      log_warning("Repeated calculation of Value for driverspec:\n");
+      log_driverspec(driver);
+      log("existing Value %p:\n", entry);
+      entry->dump();
+      log("new Value %p:\n", instr);
+      instr->dump();
+      log_flush();
+      return;
+    }
+  }
+
+  _mmap.insert(MmapType::value_type(driver,value));
 }
 
 
+// If bb is non-null, this will look for a cached driver in the same BB, or
+// in a BB that dominates the given BB.
 llvm::Value *
-LLVMWriter::ValueCache::find(const DriverSpec& driver)
+LLVMWriter::ValueCache::find(const DriverSpec& driver, llvm::BasicBlock *bb)
 {
-  auto pos = _dict.find(driver);
-  if (pos == _dict.end())  {
+  // equal_range() returns a pair of iterators
+  auto range = _mmap.equal_range(driver);
+
+  if (range.first == range.second)  {
     ++_nMisses;
-    return nullptr;
+    return nullptr;  // Empty cache
   }
-  ++_nHits;
-  return pos->second;
+
+  for (auto pos = range.first; pos != range.second; ++pos) {
+    llvm::Value *value = pos->second;
+    llvm::Instruction *instr =  llvm::dyn_cast<llvm::Instruction>(value);
+    log_assert(instr);
+
+    // First look for a cached value in the same BB.
+    if (!bb || instr->getParent() == bb) {
+      log_debug("returning cached value in BB %s same as desired BB\n",
+          instr->getParent()->getName().str().c_str());
+      ++_nHits;
+      return value;
+    }
+  }
+
+  // If no luck, look for a value in a dominating BB.
+  for (auto pos = range.first; pos != range.second; ++pos) {
+    llvm::Value *value = pos->second;
+    llvm::Instruction *instr =  llvm::dyn_cast<llvm::Instruction>(value);
+    if (_DT.dominates(instr->getParent(), bb)) {
+      ++_nHits;
+      log_debug("returning cached value in BB %s desired BB: %s\n",
+          instr->getParent()->getName().str().c_str(),
+          bb->getName().str().c_str());
+      return value;
+    } else {
+      log_debug("cached value in BB %s does not dominate desired BB: %s\n",
+          instr->getParent()->getName().str().c_str(),
+          bb->getName().str().c_str());
+    }
+  }
+
+  ++_nMisses;
+  return nullptr;
 }
 
 
@@ -876,13 +928,12 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 
   log_assert(valWidthS == cellWidthS);
 
+  unsigned numCases = cellWidthS;
   
   // The driverSpec of input B is typically a concatenation of a bunch of things.
   // For each output choice, we generate the correct slice of B.
   DriverSpec bSpec;
   finder.buildDriverOf(cell->getPort(ID::B), bSpec);
-
-  uint64_t caseMask = 1;
 
   llvm::BasicBlock *originalBB = b->GetInsertBlock();
 
@@ -896,45 +947,62 @@ LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
 
   // Make the switch instruction that will terminate the original BB.
   b->SetInsertPoint(originalBB);
-  llvm::SwitchInst *switchInst = b->CreateSwitch(valS, defaultBB);
+  llvm::SwitchInst *switchInst = b->CreateSwitch(valS, defaultBB, numCases);
+
+  // Give defaultBB a final branch to postBB
+  b->SetInsertPoint(defaultBB);
+  b->CreateBr(postBB);
+
+  // We need to create all the case BBs and their termination branch
+  // instructions before adding anything else to the branches, so that
+  // we can properly update the dominance tree.
+  
+  std::vector<llvm::BasicBlock*> bbs(numCases);
+
+  for(unsigned n = 0; n < numCases; n++) {
+
+    // Create a new BB for the this case
+    llvm::BasicBlock *caseBB = llvm::BasicBlock::Create(*c,
+                bbBaseName+"_case"+std::to_string(n), llvmFunc);
+    bbs[n] = caseBB;
+
+    // Add the branch instruction that terminates this case BB
+    b->SetInsertPoint(caseBB);
+    b->CreateBr(postBB);
+
+    // Create the ConstantInt that is the one-high bit mask for this case
+    llvm::ConstantInt *caseVal = llvmInt(1<<n, numCases);
+
+    // Update the switch instruction with the data for this case.
+    switchInst->addCase(caseVal, caseBB);
+  }
+
+  valueCache.updateDominance();
+
+  // Now fill in each case BB, and the default BB
 
   b->SetInsertPoint(defaultBB, defaultBB->begin());
-
-  // The default BB will have whatever is needed to generate the pmux A input
   llvm::Value *defaultVal = generateInputValue(cell, ID::A);  // Possibly lots of recursion here
-
-  // This branch instruction terminates defaultBB
-  b->CreateBr(postBB);
 
   // We have to put a Phi instruction at the beginning of postBB,
   // to gather the values of each case.
   b->SetInsertPoint(postBB, postBB->begin());
-  llvm::PHINode *phiInst = b->CreatePHI(defaultVal->getType(), 9999);
+  llvm::PHINode *phiInst = b->CreatePHI(defaultVal->getType(), numCases+1);
 
   phiInst->addIncoming(defaultVal, defaultBB);
+  
+  for (unsigned n = 0, offset = 0; n < numCases; n++, offset += cellWidthAY) {
 
-  for(unsigned offset = 0, caseIdx = 0; offset < cellWidthB; offset += cellWidthAY, caseIdx++) {
-
-    // Create a new BB for the this case
-    llvm::BasicBlock *caseBB = llvm::BasicBlock::Create(*c,
-                bbBaseName+"_case"+std::to_string(caseIdx), llvmFunc);
-    b->SetInsertPoint(caseBB, caseBB->begin());
+    // Get the previously-created BB for the this case
+    llvm::BasicBlock *caseBB = bbs[n];
 
     // Create the instructions for this case
+    b->SetInsertPoint(caseBB, caseBB->begin());
     DriverSpec sliceSpec = bSpec.extract(offset, cellWidthAY) ;
     llvm::Value *sliceVal = generateValue(sliceSpec);  // Possibly lots of recursion here
 
     //  Update the Phi instruction at the beginning of postBB.
     phiInst->addIncoming(sliceVal, caseBB);
-
-    // This branch instruction terminates this case BB
-    b->CreateBr(postBB);
-
-    // Create the ConstantInt that is the one-high bit mask for this case
-    llvm::ConstantInt *caseVal = llvmInt(caseMask, cellWidthS);
-    caseMask <<= 1;
-
-    switchInst->addCase(caseVal, caseBB);
   }
 
   // From now on, instructions go in the newly-created post BB,
@@ -1241,7 +1309,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
 
   // See if we already have a Value for this (non-offset) object slice
   DriverSpec tmpDs(chunk);
-  llvm::Value *val = valueCache.find(tmpDs);
+  llvm::Value *val = valueCache.find(tmpDs, b->GetInsertBlock());
 
   if (!val) {
     // If not, we have to generate it.
@@ -1264,7 +1332,7 @@ LLVMWriter::generateChunkValue(const DriverChunk& chunk,
 
     // If we actually did any shifting or truncating, add the new Value to valueCache.
     if (val != objVal) {
-      valueCache.add(val, tmpDs);
+      valueCache.add(tmpDs, val);
     }
   }
 
@@ -1333,7 +1401,7 @@ LLVMWriter::generatePrimaryInputValue(RTLIL::Wire *port)
 llvm::Value *
 LLVMWriter::generateValue(const DriverSpec& dSpec)
 {
-  llvm::Value *val = valueCache.find(dSpec);
+  llvm::Value *val = valueCache.find(dSpec, b->GetInsertBlock());
   if (val) {
     return val;  // Should often be the case.
   }
@@ -1345,7 +1413,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
 
     // The generated Value could be either a function arg or a load instruction.
     llvm::Value *val = generatePrimaryInputValue(dSpec.as_wire());
-    valueCache.add(val, dSpec);
+    valueCache.add(dSpec, val);
     return val;
 
   } else if (dSpec.is_cell()) {
@@ -1353,7 +1421,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
     RTLIL::IdString portName;
     RTLIL::Cell *cell = dSpec.as_cell(portName);
     llvm::Value *val = generateCellOutputValue(cell, portName);
-    valueCache.add(val, dSpec);
+    valueCache.add(dSpec, val);
     return val;
 
   } else if (dSpec.is_fully_const()) {
@@ -1413,7 +1481,7 @@ LLVMWriter::generateValue(const DriverSpec& dSpec)
       return values[0];
     }
 
-    valueCache.add(val, dSpec);
+    valueCache.add(dSpec, val);
     return val;
   }
 }
@@ -1530,7 +1598,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
 
   llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod);
 
-  // Set the function's args' names, and add them to the valueCache.  Note
+  // Set the function's args' names.  Note
   // that the arg names come from attribues we set earlier based on their
   // original Verilog names.  It is important to match the naming convention
   // of the original func_extract program.  Later these argument names will be
@@ -1776,7 +1844,7 @@ LLVMWriter::generateSubFunctionDecl(RTLIL::Module *submod,
 
   llvm::Function *func = llvm::Function::Create(functype, linkage, funcName, llvmMod);
 
-  // Set the function's args' names, and add them to the valueCache.  
+  // Set the function's args' names.  
   unsigned n = 0;
   for (RTLIL::IdString portname : submod->ports) {
     RTLIL::Wire *port = submod->wire(portname);
