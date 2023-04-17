@@ -543,16 +543,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     val = valA;
   }
 
-  // For the unary cells that output a logical value ($reduce_and,
-  // $reduce_or, $reduce_xor, $reduce_xnor, $reduce_bool, $logic_not), when
-  // the \Y_WIDTH parameter is greater than 1, the output is zero-extended,
-  // and only the least significant bit varies.
-
-  if (cellWidthY == getWidth(val)) {
-    return val;
-  } else {
-    return b->CreateZExtOrTrunc(val, llvmWidth(cellWidthY));
-  }
+  return val;
 }
 
 
@@ -733,12 +724,7 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
     val = valA;
   }
 
-  if (cellWidthY == getWidth(val)) {
-    return val;
-  } else {
-    return b->CreateZExtOrTrunc(val, llvmWidth(cellWidthY));
-  }
-
+  return val;
 }
 
 
@@ -1208,7 +1194,19 @@ LLVMWriter::generateCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port)
       break;
   }
 
-  // TODO: Do any necessary width adjustments to result here?
+  // For the unary cells that output a logical value ($reduce_and,
+  // $reduce_or, $reduce_xor, $reduce_xnor, $reduce_bool, $logic_not), when
+  // the \Y_WIDTH parameter is greater than 1, the output is zero-extended,
+  // and only the least significant bit varies.
+  // Also for cells in general, if the cell's Y width is less than the 
+  // width of the calculated value, we must truncate it.
+
+  if (cell->hasParam(ID::Y_WIDTH)) {
+    unsigned cellWidthY = (unsigned)(cell->parameters[ID::Y_WIDTH].as_int());
+    if (cellWidthY > 0 && cellWidthY != getWidth(val)) {
+      val = b->CreateZExtOrTrunc(val, llvmWidth(cellWidthY));
+    }
+  }
 
   // If the new Value is an Instruction, optionally give it an
   // explicit name.  But don't re-name things, and don't try to name
