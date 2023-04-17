@@ -498,24 +498,26 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
   }
 
   if (isReduce && cellWidthY != 1) {
-    // TODO: zero extend single-bit result.
+    // Later we zero-extend the single-bit result.
     log_warning("Oversize Y width for reduction %s cell %s\n",
                 cell->type.c_str(), cell->name.c_str());
     log_flush();
   }
 
+  llvm::Value *val = nullptr;
+
   if (cell->type == ID($not)) {
-    return b->CreateNot(valA);
+    val = b->CreateNot(valA);
   } else if (cell->type == ID($pos)) {
-    return valA;
+    val = valA;
   } else if (cell->type == ID($neg)) {
-    return b->CreateNeg(valA);
+    val = b->CreateNeg(valA);
   } else if (cell->type == ID($reduce_and)) {
     log_assert(cellWidthY == 1);
-    return b->CreateICmpEQ(b->CreateNot(valA), llvmZero(valWidthA));
+    val = b->CreateICmpEQ(b->CreateNot(valA), llvmZero(valWidthA));
   } else if (cell->type == ID($reduce_or) || cell->type == ID($reduce_bool)) {
     log_assert(cellWidthY == 1);
-    return b->CreateICmpNE(valA, llvmZero(valWidthA));
+    val = b->CreateICmpNE(valA, llvmZero(valWidthA));
   } else if (cell->type == ID($reduce_xor)) {
     log_assert(cellWidthY == 1);
     // A trickier operation: XOR, a parity calculation.
@@ -524,7 +526,7 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     arg_type.push_back(llvmWidth(valWidthA));
     llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod, llvm::Intrinsic::ctpop, arg_type);
     llvm::Value *popcnt = b->CreateCall(fun, valA);
-    return b->CreateTrunc(popcnt, llvmWidth(1));  // Return low-order bit
+    val = b->CreateTrunc(popcnt, llvmWidth(1));  // Return low-order bit
   } else if (cell->type == ID($reduce_xnor)) {
     log_assert(cellWidthY == 1);
     // Same as reduce_xor, plus invert.
@@ -532,20 +534,25 @@ LLVMWriter::generateUnaryCellOutputValue(RTLIL::Cell *cell)
     arg_type.push_back(llvmWidth(valWidthA));
     llvm::Function *fun = llvm::Intrinsic::getDeclaration(llvmMod, llvm::Intrinsic::ctpop, arg_type);
     llvm::Value *popcnt = b->CreateCall(fun, valA);
-    return b->CreateNot(b->CreateTrunc(popcnt, llvmWidth(1)));  // Return inverted low-order bit
+    val = b->CreateNot(b->CreateTrunc(popcnt, llvmWidth(1)));  // Return inverted low-order bit
   } else if (cell->type == ID($logic_not)) {
     log_assert(cellWidthY == 1);
-    return b->CreateICmpEQ(valA, llvmZero(valWidthA));
-  } 
+    val = b->CreateICmpEQ(valA, llvmZero(valWidthA));
+  } else {
+    log_error("Unsupported unary cell %s\n", cell->type.c_str());
+    val = valA;
+  }
 
-  log_error("Unsupported unary cell %s\n", cell->type.c_str());
-  return valA;
-
-  // TODO: For the unary cells that output a logical value ($reduce_and,
+  // For the unary cells that output a logical value ($reduce_and,
   // $reduce_or, $reduce_xor, $reduce_xnor, $reduce_bool, $logic_not), when
   // the \Y_WIDTH parameter is greater than 1, the output is zero-extended,
   // and only the least significant bit varies.
 
+  if (cellWidthY == getWidth(val)) {
+    return val;
+  } else {
+    return b->CreateZExtOrTrunc(val, llvmWidth(cellWidthY));
+  }
 }
 
 
@@ -635,71 +642,73 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   log_assert(valWidthA == workingWidth);
   log_assert(valWidthB == workingWidth);
 
+  llvm::Value *val = nullptr;
+
   if (cell->type == ID($and)) {
-    return generateAndCellOutputValue(valA, valB);
+    val = generateAndCellOutputValue(valA, valB);
   } else if (cell->type == ID($or)) {
     if (!opts.simplify_and_or_gates) {
-      return b->CreateOr(valA, valB); 
+      val = b->CreateOr(valA, valB); 
     } else if (isZero(valA)) {
-      return valB;
+      val = valB;
     } else if (isZero(valB)) {
-      return valA;
+      val = valA;
     } else {
-      return b->CreateOr(valA, valB);
+      val = b->CreateOr(valA, valB);
     }
   } else if (cell->type == ID($xor)) {
-    return b->CreateXor(valA, valB);
+    val = b->CreateXor(valA, valB);
   } else if (cell->type == ID($xnor)) {
-    return b->CreateNot(b->CreateXor(valA, valB));
+    val = b->CreateNot(b->CreateXor(valA, valB));
   } else if (cell->type == ID($shl)) {
     log_assert(!signedB);
-    return b->CreateShl(valA, valB);
+    val = b->CreateShl(valA, valB);
   } else if (cell->type == ID($shr)) {
     log_assert(!signedB);
-    return b->CreateLShr(valA, valB);
+    val = b->CreateLShr(valA, valB);
   } else if (cell->type == ID($sshl)) {
     log_assert(signedA);  // Is this actually required?
     log_assert(!signedB);
-    return b->CreateShl(valA, valB);  // Same as $shl
+    val = b->CreateShl(valA, valB);  // Same as $shl
   } else if (cell->type == ID($sshr)) {
     log_assert(signedA);  // Is this actually required?
     log_assert(!signedB);
-    return b->CreateAShr(valA, valB);
+    val = b->CreateAShr(valA, valB);
   } else if (cell->type == ID($logic_and)) {
     if (isZero(valA) || isZero(valB)) {
-      return llvmZero(1);
+      val = llvmZero(1);
     } else {
-      return b->CreateLogicalAnd(b->CreateICmpNE(valA, llvmZero(valWidthA)),
+      val = b->CreateLogicalAnd(b->CreateICmpNE(valA, llvmZero(valWidthA)),
                                  b->CreateICmpNE(valB, llvmZero(valWidthB)));
     }
   } else if (cell->type == ID($logic_or)) {
-    return b->CreateLogicalOr(b->CreateICmpNE(valA, llvmZero(valWidthA)),
+    val = b->CreateLogicalOr(b->CreateICmpNE(valA, llvmZero(valWidthA)),
                               b->CreateICmpNE(valB, llvmZero(valWidthB)));
 
     // TODO: $eqx, etc.  $pos
 
   } else if (cell->type == ID($lt)) {
-    return b->CreateICmpULT(valA, valB);
+    val = b->CreateICmpULT(valA, valB);
   } else if (cell->type == ID($le)) {
-    return b->CreateICmpULE(valA, valB);
+    val = b->CreateICmpULE(valA, valB);
   } else if (cell->type == ID($eq)) {
-    return b->CreateICmpEQ(valA, valB);
+    val = b->CreateICmpEQ(valA, valB);
   } else if (cell->type == ID($ne)) {
-    return b->CreateICmpNE(valA, valB);
+    val = b->CreateICmpNE(valA, valB);
   } else if (cell->type == ID($ge)) {
-    return b->CreateICmpUGE(valA, valB);
+    val = b->CreateICmpUGE(valA, valB);
   } else if (cell->type == ID($gt)) {
-    return b->CreateICmpUGT(valA, valB);
+    val = b->CreateICmpUGT(valA, valB);
   } else if (cell->type == ID($add)) {
-    return b->CreateAdd(valA, valB);
+    val = b->CreateAdd(valA, valB);
   } else if (cell->type == ID($sub)) {
-    return b->CreateSub(valA, valB);
+    val = b->CreateSub(valA, valB);
   } else if (cell->type == ID($mul)) {
-    return b->CreateMul(valA, valB);
+    val = b->CreateMul(valA, valB);
   } else if (cell->type == ID($div)) {
-    return b->CreateUDiv(valA, valB);  // Needs work?
+    val = b->CreateUDiv(valA, valB);  // Needs work?
   } else if (cell->type == ID($mod)) {
-    return b->CreateUDiv(valA, valB);
+    val = b->CreateUDiv(valA, valB);
 
     // TODO: $divfloor, etc.
   } else if (cell->type == ID($shift) || cell->type == ID($shiftx)) {
@@ -712,17 +721,24 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
     finder.buildDriverOf(cell->getPort(ID::B), dSpec);
 
     if (!signedB || dSpec[dSpec.size()-1] == RTLIL::S0) {
-      return b->CreateLShr(valA, valB);
+      val = b->CreateLShr(valA, valB);
     } else {
       llvm::Value *shiftR = b->CreateLShr(valA, valB); // Assuming B >= 0
       llvm::Value *shiftL = b->CreateShl(valA, b->CreateNeg(valB));  // Assuming B < 0
       llvm::Value *bIsNeg = b->CreateICmpSLT(valB, llvmZero(valWidthB));
-      return b->CreateSelect(bIsNeg, shiftL, shiftR, "shift_select");
+      val = b->CreateSelect(bIsNeg, shiftL, shiftR, "shift_select");
     }
+  } else {
+    log_error("Unsupported binary cell %s\n", cell->type.c_str());
+    val = valA;
   }
 
-  log_error("Unsupported binary cell %s\n", cell->type.c_str());
-  return valA;
+  if (cellWidthY == getWidth(val)) {
+    return val;
+  } else {
+    return b->CreateZExtOrTrunc(val, llvmWidth(cellWidthY));
+  }
+
 }
 
 
@@ -879,7 +895,7 @@ LLVMWriter::generateSimplifiedMuxCellOutputValue(RTLIL::Cell *cell)
 
 // Create a Value representing the output port of the given 3-input pmux cell.
 // This is a strange form of mux
-// TODO: Yosys optimization can try to get rid pf pmux cells (e.g. the pmuxtree
+// Yosys optimization can get rid pf pmux cells (e.g. the pmuxtree
 // command), so we can avoid having to deal with them.
 llvm::Value *
 LLVMWriter::generatePmuxCellOutputValue(RTLIL::Cell *cell)
