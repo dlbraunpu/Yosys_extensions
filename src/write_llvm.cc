@@ -705,7 +705,13 @@ LLVMWriter::generateBinaryCellOutputValue(RTLIL::Cell *cell)
   } else if (cell->type == ID($shift) || cell->type == ID($shiftx)) {
     // Logical left shift, or right shift if B is negative.
     // $shiftx is supposed to shift in x bits instead of zeros.
-    if (!signedB) {
+
+    // If input B's MSB is known to be zero, we can avoid worrying about
+    // left shifts.
+    DriverSpec dSpec;
+    finder.buildDriverOf(cell->getPort(ID::B), dSpec);
+
+    if (!signedB || dSpec[dSpec.size()-1] == RTLIL::S0) {
       return b->CreateLShr(valA, valB);
     } else {
       llvm::Value *shiftR = b->CreateLShr(valA, valB); // Assuming B >= 0
