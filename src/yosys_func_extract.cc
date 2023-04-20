@@ -56,7 +56,7 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct FuncExtractCmd : public Pass {
 
-  FuncExtractCmd() : Pass("func_extract", "Generate an ILA update function") { }
+  FuncExtractCmd() : Pass("func_extract", "Generate ILA update functions") { }
 
   void help() override
   {
@@ -64,7 +64,99 @@ struct FuncExtractCmd : public Pass {
     log("\n");
     log("    func_extract [options]\n");
     log("\n");
-    log("Generate an ILA update function for a particular instruction and ASV(s)\n");
+    log("Generate ILA update functions for a particular design.\n");
+    log("\n");
+    log("    -save_unrolled\n");
+    log("        Each unrolled copy of the design (typically there is one for each\n");
+    log("        instruction) will be saved in RTLIL format before and after\n");
+    log("        optimization is performed on it. This is very useful for debugging.\n");
+    log("        The filenames will be of the form '<instr_name>_unrolled_<delay>.rtlil'\n");
+    log("        and '<instr_name>_unrolled_opto_<delay>.rtlil'\n");
+    log("\n");
+    log("    -no_optimize_unrolled\n");
+    log("        Skip optimization of the unrolled designs. This may greatly\n");
+    log("        increase the code generation runtime and the size of the\n");
+    log("        generated code.\n");
+    log("\n");
+    log("    -use_poison\n");
+    log("        This will cause an LLVM 'poison' value to be used instead of 0 or 1\n");
+    log("        for x (undefined) signal values. This may be helpful in determining\n");
+    log("        if x values are not being optimized away and affecting the simulation\n");
+    log("        results.\n");
+    log("\n");
+    log("    -no_simplify_gates\n");
+    log("        This will prevent the LLVM code generator from doing simple\n");
+    log("        optimizations on logic gates. Possibly useful for debugging.\n");
+    log("\n");
+    log("    -no_simplify_muxes\n");
+    log("        This will prevent the LLVM code generator from doing simple\n");
+    log("        optimizations on muxes. Possibly useful for debugging.\n");
+    log("\n");
+    log("    -pre_opto_mux_to_branch\n");
+    log("        Activate the mux-to-branch pass immediately after LLVM code generation.\n");
+    log("        This will try to convert LLVM 'select' instructions (typically created.\n");
+    log("        from Yosys mux cells) into conditional branches. This can be very\n");
+    log("        effective on some designs.\n");
+    log("\n");
+    log("    -post_opto_mux_to_branch\n");
+    log("        Activate the mux-to-branch pass after final LLVM optimization. This\n");
+    log("        is typically less effective than doing it pre-opto.\n");
+    log("\n");
+    log("    -pre_opto_mux_to_branch_threshold <value>\n");
+    log("        If pre-opto mux-to-branch conversion is active, an LLVM 'select' will\n");
+    log("        not be converted unless one of the generated branches will have at\n");
+    log("        least this number of LLVM instructions. The default value is 10.\n");
+    log("\n");
+    log("    -post_opto_mux_to_branch_threshold <value>\n");
+    log("        Same as above, except for post-opto conversion.\n");
+    log("\n");
+    log("    -verbose_names\n");
+    log("        Try to give LLVM instructions names that are based on the corresponding\n");
+    log("        RTLIL signal names (instead of default numeric names). Helpful for\n");
+    log("        debugging.\n");
+    log("\n");
+    log("    -cell_based_names\n");
+    log("        Try to give LLVM instructions names that are based on the corresponding\n");
+    log("        RTLIL cell names (instead of default numeric names). Helpful for\n");
+    log("        debugging, but typically less so than signal-based names.\n");
+    log("\n");
+    log("    -no_rst\n");
+    log("        Do not read the reset value data from the file 'rst.vcd'. Instead\n");
+    log("        zero will be used for reset values.\n");
+    log("\n");
+    log("    -overwrite\n");
+    log("        By default this command will not overwrite an existing LLVM file.\n");
+    log("        This option will force every LLVM file to be written.\n");
+    log("        It has the same effect as the 'g_overwrite_existing_llvm' setting in\n");
+    log("        the 'config.txt' file.\n");
+    log("\n");
+    log("    -support_hierarchy\n");
+    log("        Activate limited support for Verilog hierarchy. Each output signal\n");
+    log("        of a sub-module will have an LLVM function created for it,\n");
+    log("        essentially the same as in the original func_extract program.\n");
+    log("        This technique is known to work for the AES test case, but will\n");
+    log("        generally work correctly only for purely combinatorial sub-modules.\n");
+    log("\n");
+    log("    -pmux\n");
+    log("        Enable support for RTLIL '$pmux' cells. By default these cells are \n");
+    log("        converted to mux trees by the Yosys 'pmuxtree' command. With this\n");
+    log("        option, they will be translated to LLVM 'switch' instructions.\n");
+    log("        Typically this gives no improvement, and can interfere with\n");
+    log("        mux-to-branch conversion.\n");
+    log("\n");
+    log("    -path <path>\n");
+    log("        Read and write all data and configuration files from the given\n");
+    log("        directory path. By default the current directory is used.\n");
+    log("\n");
+    log("This command reads and writes the same configuration and data files as the\n");
+    log("original standalone func_extract program. One difference is that this\n");
+    log("command does not read any Verilog files. It assumes the design has already\n");
+    log("been loaded, flattened, and optimized (typically with the Yosys 'prep'\n");
+    log("command). The module to be operated upon is specified in the 'instr.txt' file.\n");
+    log("\n");
+    log("To generate verbose output, either prefix this command with the Yosys\n");
+    log("'debug' command, or set the 'g_overwrite_existing_llvm' setting in\n");
+    log("the 'config.txt' file.\n");
     log("\n");
   }
 
@@ -188,7 +280,7 @@ struct FuncExtractCmd : public Pass {
 
     // Give the factory and the query to the driver
     // Our flow ordering is to iterate over ASVs in the inner loop
-    // and instructions in the outer loop.  This allows us to use one unrolled
+    // and instructions in the outer loop. This allows us to use one unrolled
     // design for all the ASVs of a particular instruction.
     // Also, we number cycles increasing over time.
     funcExtract::FuncExtractFlow flow(factory, info, false /*innerLoopIsInstrs*/,
