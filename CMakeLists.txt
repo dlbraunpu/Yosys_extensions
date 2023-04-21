@@ -40,10 +40,6 @@ link_directories(${AUTO_GEN_ILA_DIR}/live_analysis/build)
 link_directories(${AUTO_GEN_ILA_DIR}/func_extract/build)
 
 
-find_package (Z3 4.8 REQUIRED)
-include_directories(${Z3_INCLUDE_DIR})
-
-
 find_package (glog 0.4.0 REQUIRED)
 
 
@@ -62,7 +58,6 @@ add_library(${PROJECT_NAME} SHARED ${SRC_DIR})
 # A statically linked version
 #add_library(${PROJECT_NAME} ${SRC_DIR})
 
-target_link_libraries(${PROJECT_NAME} ${Z3_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${YOSYS_LIBS})
 target_link_libraries(${PROJECT_NAME} glog::glog)
 target_link_libraries(${PROJECT_NAME} TaintGenLib)
