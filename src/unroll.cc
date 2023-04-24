@@ -685,6 +685,26 @@ bool split_ff(RTLIL::Cell *cell,
 // Replace the given memory cell.
 // The signal driving the inputs is returned in to_D.
 // The signal driven by the outputs is returned in from_Q.
+// The unrolled memory is modeled by three cells:
+//
+// 1: A special "extractor" cell that models the decoding and
+//    reading of the memory.
+// 2: A special "inserter" cell that models a memory write.
+// 3: An optional mux cell that implements a write enable by
+//    bypassing the mux.
+//
+// The LLVM code generator will translate the signals representing the memory
+// values to a LLVM vectors, and it will translate the special cells to LLVM
+// vector insert and extract instructions.
+// 
+// This code currently supports only single-port read/write memories, but it
+// would be straightforward to add any number of extractors, and to have
+// multiple inserters connected in series.
+//
+// It is assumed that the memory cells are of type $mem_v2, which seems to
+// always be the case for recent Yosys releases.  Read clocks, read enables,
+// and reset signals are not supported. It is also assumed that all positions
+// share the same write enable signal.
 
 bool split_mem(RTLIL::Cell *cell, RTLIL::Cell *orig_cell, int cycle,
                RTLIL::SigSpec& to_D, RTLIL::SigSpec& from_Q)
