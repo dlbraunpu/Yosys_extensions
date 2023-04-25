@@ -88,6 +88,8 @@ private:
 
   llvm::IntegerType *llvmWidth(unsigned a);
 
+  llvm::ArrayType *llvmArrayType(unsigned elemwidth, unsigned nelems);
+
   llvm::VectorType *llvmVectorType(unsigned elemwidth, unsigned nelems);
 
   // Dangerous: only supports up to 64 bits.

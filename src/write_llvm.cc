@@ -135,6 +135,12 @@ LLVMWriter::llvmVectorType(unsigned elemwidth, unsigned nelems) {
 }
 
 
+llvm::ArrayType *
+LLVMWriter::llvmArrayType(unsigned elemwidth, unsigned nelems) {
+  return llvm::ArrayType::get(llvmWidth(elemwidth), nelems);
+}
+
+
 // Dangerous: only supports up to 64 bits.
 llvm::ConstantInt *
 LLVMWriter::llvmInt(uint64_t val, unsigned width)
@@ -183,28 +189,25 @@ LLVMWriter::llvmUndefValue(unsigned width)
 unsigned
 LLVMWriter::getWidth(llvm::Value *val)
 {
-  if (val->getType()->isVectorTy()) {
-    llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(val->getType());
-    return getWidth(vecTy->getElementType()) * vecTy->getElementCount().getFixedValue();
-  }
-  if (val->getType()->isIntegerTy()) {
-    return val->getType()->getIntegerBitWidth();
-  }
-
-  log("Odd type %d\n", val->getType()->getTypeID());
-  log_flush();
-  log_assert(false);
-  return 0;
+  return getWidth(val->getType());
 }
 
 
 unsigned
 LLVMWriter::getWidth(llvm::Type *ty)
 {
-  if (llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(ty)) {
+  if (llvm::ArrayType *arrTy = llvm::dyn_cast<llvm::ArrayType>(ty)) {
+    return getWidth(arrTy->getElementType()) * arrTy->getNumElements();
+  } else if (llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(ty)) {
     return getWidth(vecTy->getElementType()) * vecTy->getElementCount().getFixedValue();
+  } else if (ty->isIntegerTy()) {
+    return ty->getIntegerBitWidth();
+  } else {
+    log("Odd type %d\n", ty->getTypeID());
+    log_flush();
+    log_assert(false);
+    return 0;
   }
-  return ty->getIntegerBitWidth();
 }
 
 
@@ -1055,7 +1058,7 @@ LLVMWriter::generateMagicCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port
   if (cell->type == MEM_EXTRACT_MOD_NAME) {
     // Return the extract value (which goes out the DATA signal).
     log_assert(port == DATA);
-    return b->CreateExtractElement(valMemIn, valAddr);
+    return b->CreateExtractValue(valMemIn, valAddr);
 
   } else if (cell->type == MEM_INSERT_MOD_NAME) {
     // Get the data value to be inserted
@@ -1065,7 +1068,7 @@ LLVMWriter::generateMagicCellOutputValue(RTLIL::Cell *cell, RTLIL::IdString port
     // Do the insert and return the updated memory value
     // (which goes out the MEM_OUT signal).
     log_assert(port == MEM_OUT);
-    return b->CreateInsertElement(valMemIn, valData, valAddr);
+    return b->CreateInsertValue(valMemIn, valData, valAddr);
 
   } else {
     assert(false);
@@ -1530,7 +1533,7 @@ LLVMWriter::generateDestValue(RTLIL::Wire *wire)
 
 
 // Get the LLVM type of a particular Yosys port.  Usually it is an
-// integer of some width, but it could also be an LLVM Vector, if
+// integer of some width, but it could also be an LLVM Array, if
 // the port represents a Verilog memory array.
 
 llvm::Type*
@@ -1542,7 +1545,7 @@ LLVMWriter::getLlvmType(RTLIL::Wire *port)
     int width = std::stoi(port->get_string_attribute("\\vector_width"));
     int size = std::stoi(port->get_string_attribute("\\vector_size"));
     log_assert(port->width == width*size);
-    return llvmVectorType(width, size);
+    return llvmArrayType(width, size);
   }
 
   // A regular scalar integer.
@@ -1603,7 +1606,7 @@ LLVMWriter::generateFunctionDecl(const std::string& funcName, RTLIL::Module *mod
   llvm::Type* retTy;
   if (retVecSize > 0) {
     log_assert(retWidth > 0);
-    retTy = llvmVectorType(retWidth, retVecSize);
+    retTy = llvmArrayType(retWidth, retVecSize);
   } else if (retWidth > 0) {
     retTy = llvmWidth(retWidth);
   } else {
@@ -1711,6 +1714,10 @@ LLVMWriter::writeMainFunction(RTLIL::Module *unrolledRtlMod,
     if (targetType->isIntegerTy()) {
       targetWidth = getWidth(targetType);
       targetVecSize = 0;
+    } else if (targetType->isArrayTy()) {
+      llvm::ArrayType *arrTy = llvm::dyn_cast<llvm::ArrayType>(targetType);
+      targetWidth = getWidth(arrTy->getElementType());
+      targetVecSize = arrTy->getNumElements();
     } else if (targetType->isVectorTy()) {
       llvm::VectorType *vecTy = llvm::dyn_cast<llvm::VectorType>(targetType);
       targetWidth = getWidth(vecTy->getElementType());
