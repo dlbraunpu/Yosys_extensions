@@ -12,6 +12,8 @@
 
 5. Review the RTL cell library described in the manual, and look at the `.rtlil` file for an actual design to see how they are used. (Note that the single-bit gate-level cells are not important to us.)
 
+6. Study the details of the Yosys `SigSpec`, `SigChunk`, and `SigBit` classes.  These are powerful and elegant, and widely used in the RTLIL data model.
+
 ## Func_extract Software Architecture
 
 This program is implemented as a plugin extension to Yosys (so there is no `main()` function or standalone executable).  The basic instructions for building and running it are in the `README.md` file. You can see what other libraries and packages are required by reading the `CMakeLists.txt` file.
