@@ -202,7 +202,7 @@ One limitation is that memories with multiple read/write ports, read enables, or
 
 ### `$pmux` Cell Support
 
-Yosys RTLIL typically models Verilog case statements with a special `$pmux` cell, which is essentially a one-hit multi-input mux.  Normally `func_extract` runs the Yosys `pmuxtree` command under the hood, which converts `$pmux` cells to trees of regular muxes.  If the `-pmux` option is given to `func_extract`, it will preserve the `$pmux` cells and model them in LLVM as a `switch` instruction, multiple branch instructions, and a separate code block for each case.
+Yosys RTLIL typically models Verilog case statements with a special `$pmux` cell, which is essentially a one-hot multi-input mux.  Normally `func_extract` runs the Yosys `pmuxtree` command under the hood, which converts `$pmux` cells to trees of regular muxes.  If the `-pmux` option is given to `func_extract`, it will preserve the `$pmux` cells and model them in LLVM as a `switch` instruction, multiple branch instructions, and a separate code block for each case.
 
 This `$pmux` conversion flow runs robustly and produces correct LLVM IR code, but unfortunately it rarely seems to give any simulation performance improvement, and its output can degrade the performance of the (more useful) mux-to-branch algorithm described above.
 
