@@ -104,4 +104,18 @@ of three things: a cell output port slice, a wire slice (representing a top-leve
 `DriverSpec` objects can be constructed and manipulated very much like `SigSpec` objects.  Several functions in `write_llvm.cc` take
 `DriverSpec` parameters, and the important `ValueCache` class in `write_llvm.h` uses them as hashable keys.
 
+The classes `DriverChunk` and `DriverBit` are used to implement `DriverSpec` (similar to the Yosys `SigChunk` and `SigBit` classes).
 
+The class `DriverFinder` builds and maintains tables that map from signal receivers (i.e. cell input ports and top-level output ports) to
+whatever drives them.  As you no doubt remember from the Yosys Manual, the RTLIL data model does not have direct links from wires to
+the cell ports and other wires connected to them.  An instance of `DriverFinder` is built and used to perform this wire-to-port mapping.
+
+These two functions are the main API for `DriverFinder`:
+
+    // Get a description of what drives the given wire. driver gets filled in.
+    void buildDriverOf(Yosys::RTLIL::Wire *wire, DriverSpec& driver);
+          
+    // Get a description of what drives the given SigSpec. driver gets filled in.
+    void buildDriverOf(const Yosys::RTLIL::SigSpec& sigspec, DriverSpec& driver);
+
+ 
