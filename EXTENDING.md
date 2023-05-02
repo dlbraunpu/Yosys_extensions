@@ -122,6 +122,12 @@ The function `LLVMWriter::generateValue(const DriverSpec& dSpec)` is (recursivel
 It picks apart the given driver spec, calls other functions to generate the values of cell outputs or top-level input ports, and finally
 does any necessary masking, shifting, extending, etc. to assemble the desired result.
 
+If `generateValue()` encounters a RTL cell output port, it calls `generateCellOutputValue()` to generate the `llvm::Value` that represents it.
+`generateCellOutputValue()` calls one of various functions which process each type of RTL cell.  For a typical cell, `generateValue()` is called to
+generate `llvm::Value`s for each of its inputs.  Any necessary widening or truncation is done on those values, and finally they are used as
+operands for the LLVM instruction that calculates the RTL cell's output.  (Beware: The RTL cell input/output bit widths may not match the
+signals that drive them, and the truncation/extension rules described in the Yosys Manual have to be carefully followed).
+
 The class `ValueCache` maintains a map from `DriverSpec` objects to the `llvm::Value` objects that have been generated to calculate their values.
 This cache allows a `llvm::Value` to be re-used as often as necessary in different places, without re-calculating it from scratch.
 Without this cache, the generated code would be much larger.  The cache understands the dominance relationships of the function's Basic Blocks,
