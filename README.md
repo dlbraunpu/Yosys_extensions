@@ -26,11 +26,13 @@ The result is a shared library: `build/libyosys_func_extract.so`.
 
 ## To run:
 
-1. Ensure that the Verilog design and the various configuration
+1. Read the original `func_extract` documentation to learn what the program does and how to prepare the input data it needs.
+
+2. Ensure that the Verilog design and the various configuration
 files (e.g. `instr.txt`) are available.  The Verilog files can be anywhere,
 but typically the configuration files and output files will be located in the current directory.
 
-2. Write a Yosys script that will load and optimize the Verilog design and invoke the `funct_extract` command, e.g.:
+3. Write a Yosys script that will load and optimize the Verilog design and invoke the `funct_extract` command, e.g.:
 
         read_verilog path/to/my_design.v
 
@@ -49,7 +51,7 @@ Typically you can generate the required reset data file (`rst.vcd`) in the same 
 
         sim -n 5 -clock clk -resetn resetn -rstlen 5 -vcd ./rst.vcd
 
-3. Invoke Yosys, loading the shared library and running the script:
+4. Invoke Yosys, loading the shared library and running the script:
 
         yosys -m /path/to/libyosys_func_extract.so my_script.ys
         
