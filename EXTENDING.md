@@ -97,4 +97,11 @@ Code generation is done by the class `LLVMWriter` in `llvm_writer.cc`.
 
 The file `driver_tools.cc` contains several important classes that are vital to code generation.
 
-*TODO*
+The class `DriverSpec` represents the drivers of each bit of a (possibly) multi-bit signal.  It is essentially a more powerful version of
+the Yosys `SigSpec` class (in fact, it was created by copying and editing the `SigSpec` code).  Remember that a `SigSpec` object models a signal as a
+concatenation of wire slices and 0/1/x/z constant values. But a `DriverSpec` object instead models the *driver* of a signal: a concatenation
+of three things: a cell output port slice, a wire slice (representing a top-level input port), and a 0/1/x/z constant value.
+`DriverSpec` objects can be constructed and manipulated very much like `SigSpec` objects.  Several functions in `write_llvm.cc` take
+`DriverSpec` parameters, and the important `ValueCache` class in `write_llvm.h` uses them as hashable keys.
+
+
