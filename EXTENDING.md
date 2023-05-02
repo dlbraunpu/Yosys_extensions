@@ -91,7 +91,31 @@ The code for module unrolling is in the file `unroll.cc`.  These steps are done:
 
 Code generation is done by the class `LLVMWriter` in `llvm_writer.cc`.
 
-*TODO*
+The main entry point is the function `write_llvm_ir()`.  This function creates the `llvm::Module` that will contain the update function,
+creates a `llvm::Function` for the update function, and fills it with LLVM instructions that calculate the new ASV value(s) based on the input parameters.
+If the unrolled design contains sub-modules, additional `llvm::Function`s will be created for them, and called from the main function.
+
+The code generation algorithm recursively traverses the design netlist starting at the desired output port, ending when the input ports (which are
+represented by LLVM function parameters) are reached.  For each Yosys RTL cell encountered, LLVM code is recursively generated to calculate its input value, and the appropriate LLVM instruction
+is generated to calculate the cell output value.  Most RTL cells (e.g. AND, OR) can be represented by a single LLVM insctruction, but some cells need to be modeled by multiple LLVM inscructions.
+Slicing and concatenation of signals will get modeled by LLVM extension, truncation, shifting and masking operations.
+
+The top-level coded generation algorithm is implemented by this code in `LLVMWriter::writeMainFunction()`:
+
+    // Collect the drivers of each bit of the destination wire
+    DriverSpec dSpec;
+    finder.buildDriverOf(targetPort, dSpec);
+
+    // Print what drives the bits of this wire
+    log_debug_driverspec(dSpec);
+    log_debug("\n");
+
+    llvm::Value *destValue = generateValue(dSpec);
+
+    b->CreateRet(destValue);
+  
+The function `generateValue()` will recursively generate the code for the entire fanin cone of the desired result.
+
 
 ### Code Generation Support Classes
 
