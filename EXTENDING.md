@@ -114,8 +114,21 @@ The top-level coded generation algorithm is implemented by this code in `LLVMWri
 
     b->CreateRet(destValue);
   
-The function `generateValue()` will recursively generate the code for the entire fanin cone of the desired result.
+The function `generateValue()` will recursively generate the code for the entire fanin cone of the desired result.  Note how
+`DriverFinder::buildDriverOf()` maps from the module output port (which represents the new ASV value) to whetever actually drives it.
+(`DriverFinder` and `DriverSpec` are described in detail below).
 
+The function `LLVMWriter::generateValue(const DriverSpec& dSpec)` is (recursively) called in several places, and does a lot of work.
+It picks apart the given driver spec, calls other functions to generate the values of cell outputs or top-level input ports, and finally
+does any necessary masking, shifting, extending, etc. to assemble the desired result.
+
+The class `ValueCache` maintains a map from `DriverSpec` objects to the `llvm::Value` objects that have been generated to calculate their values.
+This cache allows a `llvm::Value` to be re-used as often as necessary in different places, without re-calculating it from scratch.
+Without this cache, the generated code would be much larger.  The cache understands the dominance relationships of the function's Basic Blocks,
+so that we can guarantee that a `llvm::Value` will not ever be used without first being generated.  (The function `llvm::verifyFunction()` is
+called at the end of code generation to ensure that there are no accidental violations of dominance.)  Normally an update function will have
+only a single Basic Block (and thus no branching instructions), but some optional optimizations for RTL `$mux` and `$pmux` cells may create
+additional BBs and branches.
 
 ### Code Generation Support Classes
 
